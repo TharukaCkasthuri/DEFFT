@@ -1,4 +1,0 @@
-1. Use a dictionery to store fedavg weights.
-2. Fix aggregator function in server class.
-3. Refactor fedaboost-optima variable to fedaboost.
-
