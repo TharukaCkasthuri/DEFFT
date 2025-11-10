@@ -1,0 +1,11 @@
+defaults:
+  - dataset: mnist   # default dataset
+  - _self_
+
+# Checkpoint + logging paths
+checkpt_root: checkpt
+log_dir: .logs
+loss_threshold: 0.01
+patience: 2
+save_ckpt: true
+log_summary: true
