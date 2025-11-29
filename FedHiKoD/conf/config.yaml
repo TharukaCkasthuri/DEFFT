@@ -1,5 +1,5 @@
 defaults:
-  - dataset: mnist   # default dataset
+  - dataset: cifar10   # default dataset
   - _self_
 
 # Checkpoint + logging paths
@@ -9,3 +9,6 @@ loss_threshold: 0.01
 patience: 2
 save_ckpt: true
 log_summary: true
+stratergy: fedavg
+loss_function: CrossEntropyLoss
+version: v2

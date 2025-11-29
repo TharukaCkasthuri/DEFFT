@@ -38,7 +38,8 @@ def get_client_ids(folder_path):
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Federated training parameters")
-    parser.add_argument("--dir", type=str, default="mnist/alpha_0_1", help="Choose a dataset from the available options; femnist, mnist, kv, celeba, cifar10")
+    parser.add_argument("--dir", type=str, default="cifar10/alpha_0_2", help="Choose a dataset from the available options; femnist, mnist, kv, celeba, cifar10")
+    parser.add_argument("--client_fraction", type=float, default=0.3)
     return parser.parse_args()
 
 def load_config(config_path="../config.cfg"):
@@ -49,9 +50,7 @@ def load_config(config_path="../config.cfg"):
 def main():
     args = parse_arguments()
     folder_path = args.dir
-    config = load_config()
-
-    client_fraction = float(config['MNIST']['client_fraction'])
+    client_fraction = args.client_fraction
 
     client_ids = get_client_ids(f"{folder_path}/trainpt")
 

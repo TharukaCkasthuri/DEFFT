@@ -222,7 +222,7 @@ def performance(loss_fn, ckpt,testdata, ids):
     f1s = {}
     accs = {}
     for client in ids:
-        test_dataset = torch.load(f"{testdata}/{client}.pt")
+        test_dataset = torch.load(f"{testdata}/{client}.pt", weights_only=False)
         loss,f1, acc, f_macro= evaluate_classification(ckpt, test_dataset, loss_fn, 8)
         losses[client] = round(loss,4)
         f1s[client] = round(f1,4)

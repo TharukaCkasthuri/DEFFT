@@ -35,7 +35,7 @@ from datasets.cifar10.preprocess import CIFARDataset
 from sklearn.metrics import f1_score
 import torch.nn.functional as F
 
-from typing import Tuple, Dict, List
+from typing import Dict
 
 class Client:
     """
@@ -141,7 +141,8 @@ class Client:
             logging.error(f"Client {self.client_id} broadcast load error: {e}. Keeping old weights.")
             return
         # sync local from broadcast
-        self.local_model.load_state_dict(self.broadcast_model.state_dict())
+        local_state = {k: v.clone().detach() for k, v in model_weights.items()}
+        self.local_model.load_state_dict(local_state, strict=True)
 
 
     def set_model(self, model_weights:dict) -> None:
@@ -217,7 +218,7 @@ class Client:
             logging.info(
                 f"Client: {self.client_id:<10} Epoch: {epoch + 1:<2} Average Training Loss: {loss_avg:<10.6f} Global Round: {global_round}"
             )
-            print(f"Client: {self.client_id:<10} Epoch: {epoch + 1:<2} Average Training Loss: {loss_avg:<10.6f} Global Round: {global_round}")
+            #print(f"Client: {self.client_id:<10} Epoch: {epoch + 1:<2} Average Training Loss: {loss_avg:<10.6f} Global Round: {global_round}")
 
             previous_loss_avg = loss_avg
 
@@ -267,7 +268,6 @@ class Client:
         
         return loss_avg, f1_avg
     
-
 class FedProxClient(Client):
 
     def _proximal_term(self, model: torch.nn.Module) -> torch.Tensor:
@@ -283,6 +283,7 @@ class FedProxClient(Client):
                 p_ref = p_ref.to(p_local.device)
             proximal_term += (p_local - p_ref).pow(2).sum()
         return proximal_term
+    
 
     def train(
         self,
@@ -294,6 +295,16 @@ class FedProxClient(Client):
     ) -> torch.nn.Module:
     
         self.local_model.train()
+
+        same_ref = all(
+        p1.data_ptr() == p2.data_ptr()
+        for (_, p1), (_, p2) in zip(
+            self.local_model.named_parameters(), 
+            self.broadcast_model.named_parameters()
+        )
+        )
+        print(f"[DEBUG] {self.client_id}: local_model and broadcast_model share memory? {same_ref}")
+        # 
         for epoch in range(max_local_round):
             batch_loss = []
 
@@ -301,23 +312,24 @@ class FedProxClient(Client):
                 x, y = x.to(self.device), y.to(self.device)
                 outputs = self.local_model(x)
 
-                if isinstance(self.loss_fn, torch.nn.CrossEntropyLoss) and isinstance(self.train_dataset, FEMNISTDataset):
-                    y = y.view(-1)
-                elif isinstance(self.train_dataset, (MNISTDataset, CIFARDataset)):
-                    y = torch.argmax(y, dim=1)
+                if isinstance(self.loss_fn, torch.nn.CrossEntropyLoss):
+                    if y.ndim > 1:
+                        if y.size(-1) == 1:
+                            y = y.squeeze(-1)          # (N,1) -> (N,)
+                        else:
+                            y = y.argmax(dim=-1)       # one-hot -> indices
+                    y = y.long()
                 else:
-                    y = y.view(-1, 1)
+                    pass
 
                 local_loss = self.loss_fn(outputs, y)
                 prox = self._proximal_term(self.broadcast_model) if mu > 0.0 else 0.0
-
                 loss = local_loss + 0.5 * mu * prox
 
                 self.optimizer.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.local_model.parameters(), max_norm=1.0)
                 self.optimizer.step()
-
                 batch_loss.append(loss.detach().item())
 
             loss_avg = float(sum(batch_loss) / max(len(batch_loss), 1))
@@ -328,16 +340,84 @@ class FedProxClient(Client):
 
         return self.local_model
 
-
-class FedSMOClient(Client):
+class QFFedAvgClient(Client):
     """
-    FedSMO-specific client that extends the base Client class
+    QFFedAvg-specific client that extends the base Client class
     with privacy-preserving fitness reporting and peer-committee auditing.
     """
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._leader_state = None  # holds the current group's leader weights
+
+    def get_loss_at_global(self):
+        return self.pre_loss_at_global
+
+    def train(self, global_round: int, max_local_round: int, threshold: float, patience: int):
+        """
+        Training the model, using the fedaboost-optima strategy.
+
+        Parameters:
+        ------------
+        global_round: int; global round number.
+        max_local_round: int; maximum number of local rounds, in case loss reduction threshold is not met.
+        threshold: float; threshold for loss reduction.
+        patience: int; number of patience rounds to wait for loss reduction.
+
+        Returns:
+        ------------
+        model: torch.nn.Module object; trained model.
+        """
+        
+        self.pre_loss_at_global, _  = self.evaluate(broadcast_model=True)
+        self.local_model.train()
+
+        for epoch in range(max_local_round):
+            batch_loss = []
+
+            for batch_idx, (x, y) in enumerate(self.traindl):
+                x, y = x.to(self.device), y.to(self.device)
+                outputs = self.local_model(x)
+                
+                if isinstance(self.loss_fn, torch.nn.CrossEntropyLoss):
+                    if y.ndim > 1:
+                        if y.size(-1) == 1:
+                            y = y.squeeze(-1)          # (N,1) -> (N,)
+                        else:
+                            y = y.argmax(dim=-1)       # one-hot -> indices
+                    y = y.long()
+
+                loss = self.loss_fn(outputs, y)
+                self.optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.local_model.parameters(), max_norm=1.0)
+                self.optimizer.step()
+
+                batch_loss.append(loss.item())
+
+            loss_avg = sum(batch_loss) / len(batch_loss)
+
+            # Thread-safe logging here
+            logging.info(
+                f"Client: {self.client_id:<10} Epoch: {epoch + 1:<2} Average Training Loss: {loss_avg:<10.6f} Global Round: {global_round}"
+            )
+            #print(f"Client: {self.client_id:<10} Epoch: {epoch + 1:<2} Average Training Loss: {loss_avg:<10.6f} Global Round: {global_round}")
+
+            local_state = {k: v.clone().detach() for k, v in self.local_model.state_dict().items()}
+            global_state = {k: v.clone().detach() for k, v in self.broadcast_model.state_dict().items()}
+
+        return self.local_model
+
+class FedHiKoDClient(Client):
+    """
+    FedHiKoD-specific client that extends the base Client class
+    with privacy-preserving fitness reporting and peer-committee auditing.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._leader_state = None  # holds the current group's leader weights
+
 
     def get_class_distribution(self) -> Dict[int, int]:
         """
@@ -356,28 +436,29 @@ class FedSMOClient(Client):
         return class_counts
 
     
-    def report_fitness(self, recipe_hash, clip_range=( -0.5, 0.5), dp_sigma=0.03, reg_lambda=0.02,
-                   alpha=0.7, global_momentum_vec=None):
+    def report_fitness(self, recipe_hash, clip_range=( -0.9, 0.9)) -> Dict[str, object]:
+        """
+        """
+        pre_loss, _  = self.evaluate(broadcast_model=True)   # evaluate before local train in this round
+        post_loss, _ = self.evaluate(broadcast_model=False)  # evaluate after local train
+        delta_loss = post_loss - pre_loss  # negative is good
 
-            pre_loss, _  = self.evaluate(broadcast_model=True)   # evaluate before local train in this round
-            post_loss, _ = self.evaluate(broadcast_model=False)  # evaluate after local train
-            delta_loss = post_loss - pre_loss  # negative is good
+        # 2) Clip + DP noise
+        a, b = clip_range
+        delta_loss = float(np.clip(delta_loss, a, b))
 
-            # 2) Clip + DP noise
-            a, b = clip_range
-            delta_loss = float(np.clip(delta_loss, a, b))
+        # 4) Penalty for tiny validation sets
+        n_eval = len(self.valdl.dataset)
+        progress_term = -delta_loss
 
-            # 4) Penalty for tiny validation sets
-            n_eval = len(self.valdl.dataset)
+        logging.info(f"Progress term: {progress_term}")
 
-            progress_term = -delta_loss
-
-            return {
-                "client_id": self.client_id,
-                "recipe_hash": recipe_hash,
-                "n_eval": int(n_eval),
-                "score": float(progress_term),
-            }
+        return {
+            "client_id": self.client_id,
+            "recipe_hash": recipe_hash,
+            "n_eval": int(n_eval),
+            "score": float(progress_term),
+        }
 
 
     def receive_leader(self, leader_weights: dict | None) -> None:
@@ -391,7 +472,6 @@ class FedSMOClient(Client):
             for k, v in leader_weights.items()
         }
 
-    
 
     def _build_teacher_from_leader(self) -> torch.nn.Module | None:
         """
@@ -452,16 +532,16 @@ class FedSMOClient(Client):
     
 
     def train(
-    self,
-    global_round: int,
-    max_local_round: int,
-    grad_clip: float = 1.0,
-    kd_alpha: float = 0.3,      # KD weight
-    kd_T: float = 2.0,          # fixed temperature
-    use_kd: bool = True,
-) -> torch.nn.Module:
+        self,
+        global_round: int,
+        max_local_round: int,
+        grad_clip: float = 1.0,
+        kd_alpha: float = 0.3,      # KD weight
+        kd_T: float = 2.0,          # fixed temperature
+        use_kd: bool = True,
+    ) -> torch.nn.Module:
 
-        # snapshot the global model for FedSMO's delta computation
+        # snapshot the global model for FedHiKoD's delta computation
         self.global_model = copy.deepcopy(self.local_model).to(self.device)
         self.local_model.train()
 
@@ -473,7 +553,6 @@ class FedSMOClient(Client):
 
         if not teacher_leader:
             use_kd = False
-            print(f"[{self.client_id}] No teacher is available for KD.")
             logging.info(f"[{self.client_id}] No teacher is available for KD.")
 
         # ----------------------------
@@ -527,12 +606,13 @@ class FedSMOClient(Client):
                 batch_loss.append(loss.item())
 
             avg_loss = float(sum(batch_loss) / max(1, len(batch_loss)))
-            logging.info(f"[{self.client_id}] Round {global_round} | Epoch {epoch+1} | Loss={avg_loss:.4f}")
+            logging.info(
+                f"Client: {self.client_id:<10} Epoch: {epoch + 1:<2} Average Training Loss: {avg_loss:<10.6f} Global Round: {global_round}"
+            )
             self._leader_state = None
 
         return self.local_model
-    
-
+      
 class BoostingClient(Client):
     """
     Client class for federated learning.
@@ -814,7 +894,6 @@ class BoostingClient(Client):
         self.weight = self.weight * math.exp(float(self.eta) *  -float(alpha) * int(performance_indicator))
         return self.weight
 
-
 class DittoClient(Client):
     """
     DittoClient class extends the base Client for Ditto personalized FL.
@@ -875,7 +954,14 @@ class DittoClient(Client):
 
         # Take Deep-copy the global/local model architecture as the personal model for Ditto
         self.personal_model = copy.deepcopy(self.local_model).to(self.device)
-        
+
+        self.personal_optimizer = torch.optim.SGD(
+                self.personal_model.parameters(),
+                lr=learning_rate,
+                weight_decay=weight_decay,
+            )
+
+        """
         # Personal optimizer (different LR is often used)
         conv_params = []
         fc_params = []
@@ -895,6 +981,7 @@ class DittoClient(Client):
             self.personal_model.parameters(),
             lr=self.personal_lr, 
             weight_decay=0.0001)
+        """
 
 
     def train(
@@ -946,14 +1033,13 @@ class DittoClient(Client):
                 x, y = x.to(self.device), y.to(self.device)
                 predictions = self.personal_model(x)
 
-                if isinstance(self.loss_fn, torch.nn.CrossEntropyLoss) and isinstance(self.train_dataset, FEMNISTDataset):
-                    y = y.view(-1)
-                elif isinstance(self.train_dataset, MNISTDataset):
-                    y = torch.argmax(y, dim=1)
-                elif isinstance(self.train_dataset, CIFARDataset):
-                    y = torch.argmax(y, dim=1)
-                else:
-                    y = y.view(-1, 1)
+                if isinstance(self.loss_fn, torch.nn.CrossEntropyLoss):
+                    if y.ndim > 1:
+                        if y.size(-1) == 1:
+                            y = y.squeeze(-1)          # (N,1) -> (N,)
+                        else:
+                            y = y.argmax(dim=-1)       # one-hot -> indices
+                    y = y.long()
 
                 loss = self.loss_fn(predictions, y)
 
@@ -991,14 +1077,13 @@ class DittoClient(Client):
             x, y = x.to(self.device), y.to(self.device)
             outputs = self.personal_model(x)
 
-            if isinstance(self.loss_fn, torch.nn.CrossEntropyLoss) and isinstance(self.train_dataset, FEMNISTDataset):
-                y = y.view(-1)
-            elif isinstance(self.train_dataset, MNISTDataset):
-                y = torch.argmax(y, dim=1)
-            elif isinstance(self.train_dataset, CIFARDataset):
-                    y = torch.argmax(y, dim=1)
-            else:
-                y = y.view(-1, 1)
+            if isinstance(self.loss_fn, torch.nn.CrossEntropyLoss):
+                    if y.ndim > 1:
+                        if y.size(-1) == 1:
+                            y = y.squeeze(-1)          # (N,1) -> (N,)
+                        else:
+                            y = y.argmax(dim=-1)       # one-hot -> indices
+                    y = y.long()
 
             loss = self.loss_fn(outputs, y)
             batch_loss.append(loss.item())

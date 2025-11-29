@@ -32,6 +32,9 @@ from sklearn.model_selection import train_test_split
 import torch
 from torch.utils.data import Dataset
 
+import hydra
+from omegaconf import DictConfig
+
 from imutils import paths
 
 def load(paths, verbose=-1):
@@ -419,18 +422,22 @@ def build_dataset(data_dir, saving_dir, alpha) -> None:
 
         print(f"Saved {os.path.join(trainpt_dir, f'{id}.pt')} and {os.path.join(testpt_dir, f'{id}.pt')}")
 
-def main():
-    parser = argparse.ArgumentParser(description="Preprocess the MNIST dataset.")
-    parser.add_argument("--num_clients", type=int, default=100)
-    parser.add_argument("--image_path", type=str, default="/Users/tak/Documents/BTH/MNIST/trainingSet")
-    parser.add_argument("--alpha", type=float, default=0.1, help="Dirichlet alpha parameter")
-    args = parser.parse_args()
+
+from pathlib import Path
+CONFIG_DIR = str(Path(__file__).resolve().parents[2] / "conf")
+@hydra.main(config_path=CONFIG_DIR, config_name="config", version_base=None)
+def main(cfg:DictConfig):
+    print(cfg)
+    #parser = argparse.ArgumentParser(description="Preprocess the MNIST dataset.")
+    #parser.add_argument("--num_clients", type=int, default=100)
+    #parser.add_argument("--image_path", type=str, default="/Users/tak/Documents/BTH/MNIST/trainingSet")
+    #parser.add_argument("--alpha", type=float, default=0.1, help="Dirichlet alpha parameter")
+    #args = parser.parse_args()
+    args = None
 
     image_path = args.image_path
     image_paths = list(paths.list_images(image_path))
     image_list, label_list = load(image_paths, verbose=10000)
-
-    #binarize the labels
 
     label_list = [int(label) for label in label_list]
     print("Labels:", set(label_list))

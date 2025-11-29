@@ -33,23 +33,20 @@ import random
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import f1_score
-from k_means_constrained import KMeansConstrained
 from typing import List
 from collections import defaultdict
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from clients import Client
-from aggregators import fedProx, weighted_avg, fedaboost_avg
+from aggregators import weighted_avg
 
 from datasets.femnist.preprocess import FEMNISTDataset
 from datasets.mnist.preprocess import MNISTDataset
+from datasets.cifar10.preprocess import CIFARDataset
 from utils import stable_hash
 from typing import Tuple, Dict
 from config import FitnessCfg
-
-
-from aggregators import FairAggregator
 
 class Server(ABC):
     """
@@ -158,104 +155,39 @@ class Server(ABC):
         model: torch.nn.Module object;
             Trained model
         """
-        no_update_rounds = 0
 
-        def _train_one_client(client, round_num, max_local_round, threshold, patience):
+        for round in range(1, self.rounds + 1):
+            logging.info(f"\n=== Global Round {round} ===")
+            train_clients_ids = train_schedule.get(str(round), [])
+
+            if not train_clients_ids:
+                logging.warning(f"No clients for round {round}. Skipping.")
+                continue
+
+            train_clients = {cid: self.client_dict[cid] for cid in train_clients_ids}
+            self._broadcast(self.global_model, train_clients)
+
+            num_data_points = {}
+            for client in train_clients.values():
                 try:
-                    logging.info(f"[Client {client.client_id}] Round {round_num} - Training started")
-                    client_model = client.train(round_num, max_local_round, threshold, patience)
-                    num_points = client.get_num_datapoints()
-                    weights = client_model.state_dict()
-
-                    return client.client_id, num_points, weights, None
+                    client.train(round, max_local_round, threshold, patience)
+                    num_data_points[client.client_id] = client.get_num_datapoints()
+                    
                 except Exception as e:
-                    logging.exception(f"[Client {client.client_id}] Round {round_num} - Training failed with exception")
-                    return client.client_id, 0, None, e
-        
-        if multithreading:
+                    logging.error(f"Client {client.client_id} failed: {e}")
+                    raise
+                logging.info(f"\n")
 
-            logging.info(f"Using multithreading with max workers: {min(10, len(self.client_dict), os.cpu_count())}")
-            no_update_rounds = 0
+            total_points = sum(num_data_points.values())
+            if total_points == 0:
+                logging.warning("No data points collected this round.")
+                continue
 
-            for round_num in range(1, self.rounds + 1):
-                logging.info(f"\n=== Global Round {round_num} ===")
+            weights = [num_data_points[c.client_id] / total_points for c in train_clients.values()]
+            logging.info(f"Global model aggregation weights: {weights}")
+            self.global_model = self._aggregate(train_clients, weights)
 
-                train_clients_ids = train_schedule.get(str(1), [])
-                if not train_clients_ids:
-                    logging.warning(f"No clients for round {round_num}. Skipping.")
-                    continue
-
-                train_clients = {cid: self.client_dict[cid] for cid in train_clients_ids}
-                self._broadcast(self.global_model, train_clients)
-
-                num_data_points = {}
-                client_updates = []
-
-                max_workers = min(6, len(train_clients), os.cpu_count())
-                with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ClientThread") as executor:
-                    futures = {
-                        executor.submit(_train_one_client, client, round_num, max_local_round, threshold, patience): cid
-                        for cid, client in train_clients.items()
-                    }
-
-                    for future in as_completed(futures):
-                        cid = futures[future]
-                        try:
-                            cid_result, points, weights, err = future.result()
-                            if err:
-                                logging.error(f"[Client {cid_result}] Round {round_num} - Training failed: {err}")
-                                continue
-                            num_data_points[cid_result] = points
-                            client_updates.append((cid_result, weights))
-                        except Exception as e:
-                            logging.exception(f"[Client {cid}] Round {round_num} - Unexpected failure: {e}")
-
-                total_points = sum(num_data_points.values())
-                if total_points == 0:
-                    logging.warning("No data points collected this round.")
-                    continue
-
-                # Normalize weights
-                weights = [num_data_points[cid] / total_points for cid, _ in client_updates]
-                participating_clients = {cid: train_clients[cid] for cid, _ in client_updates}
-
-                self.global_model = self._aggregate(participating_clients, weights)
-                self.save_checkpt(self.global_model, f"{self.checkpoint_path}/checkpoints/ckpt_{round_num}.pt")
-
-        else:
-            for round in range(1, self.rounds + 1):
-                logging.info(f"\n=== Global Round {round} ===")
-                print(f"\n=== Global Round {round} ===")
-                train_clients_ids = train_schedule.get(str(round), [])
-
-                if not train_clients_ids:
-                    logging.warning(f"No clients for round {round}. Skipping.")
-                    continue
-
-                train_clients = {cid: self.client_dict[cid] for cid in train_clients_ids}
-                self._broadcast(self.global_model, train_clients)
-
-                num_data_points = {}
-                for client in train_clients.values():
-                    try:
-                        client.train(round, max_local_round, threshold, patience)
-                        num_data_points[client.client_id] = client.get_num_datapoints()
-                        
-                    except Exception as e:
-                        logging.error(f"Client {client.client_id} failed: {e}")
-                        raise
-                    logging.info(f"\n")
-                    print(f"\n")
-
-                total_points = sum(num_data_points.values())
-                if total_points == 0:
-                    logging.warning("No data points collected this round.")
-                    continue
-
-                weights = [num_data_points[c.client_id] / total_points for c in train_clients.values()]
-                self.global_model = self._aggregate(train_clients, weights)
-
-                self.save_checkpt(self.global_model, f"{self.checkpoint_path}/checkpoints/ckpt_{round}.pt")
+            self.save_checkpt(self.global_model, f"{self.checkpoint_path}/checkpoints/ckpt_{round}.pt")
 
 
         return self.global_model
@@ -327,37 +259,174 @@ class FedAvgServer(Server):
         return weighted_avg(self.global_model, [c.get_model() for c in trained_clients.values()], weights)
     
 
-class FedProxServer(Server):
-    def _aggregate(self, trained_clients, weights):
-        return weighted_avg(self.global_model, [c.get_model() for c in trained_clients.values()], weights)
-    
+class QFedAvgServer(Server):
+    """
+    Federated server implementing q-FedAvg aggregation.
+    """
 
-    def train(self, train_schedule: dict, max_local_round: int, mu:float, threshold: float, patience: int,) -> torch.nn.Module:
+    def __init__(self, rounds: int, q: float = 0.5, L: float = 1.0,
+                 checkpt_path: str = None, log_dir: str = 'runs') -> None:
+        super().__init__(rounds=rounds, checkpt_path=checkpt_path, log_dir=log_dir)
+        self.q = q
+        self.L = L
+        self._eps = 1e-9  # numerical stability
+
+    def _aggregate(self, trained_clients: dict, weights) -> torch.nn.Module:
         """
-        
+        q-FedAvg aggregation.
+        trained_clients: dict[client_id -> client]
+        We use:
+            - client.get_loss_at_global()
+            - client.get_model()
         """
-        no_update_rounds = 0
+        device = self.device
+
+        # snapshot global params w^t
+        global_state = {
+            name: param.detach().clone().to(device)
+            for name, param in self.global_model.state_dict().items()
+        }
+
+        # initialize accumulators
+        delta_sum = {
+            name: torch.zeros_like(param, device=device)
+            for name, param in global_state.items()
+        }
+        h_sum = torch.tensor(0.0, device=device)
+
+        for cid, client in trained_clients.items():
+
+            # local model weights w_k^{t+1}
+            local_models_state = {
+                name: p.detach().clone().to(device)
+                for name, p in client.get_model().state_dict().items()
+            }
+
+            # compute Δw and its norm
+            delta_norm_sq = torch.tensor(0.0, device=device)
+            delta_w = {}
+
+            for name in global_state.keys():
+                diff = self.L * (global_state[name] - local_models_state[name])
+                delta_w[name] = diff
+                delta_norm_sq += torch.sum(diff * diff)
+
+            # retrieve F_k(w^t)
+            F_k = client.get_loss_at_global()
+            if not torch.is_tensor(F_k):
+                F_k = torch.tensor(F_k, dtype=torch.float32, device=device)
+            F_k = torch.clamp(F_k.to(device), min=self._eps)
+            Fk_q = F_k ** self.q
+
+            # accumulate Δ_k^t
+            for name in delta_sum.keys():
+                delta_sum[name] += Fk_q * delta_w[name]
+
+            # accumulate h_k^t
+            h_k = self.q * (F_k ** (self.q - 1.0)) * delta_norm_sq + self.L * Fk_q
+            h_sum += h_k
+
+        if h_sum.item() == 0.0:
+            logging.warning("q-FedAvg: h_sum == 0, skipping update")
+            return self.global_model
+
+        # new model update
+        new_state = {}
+        for name, w_t in global_state.items():
+            new_state[name] = w_t - delta_sum[name] / h_sum
+
+        self.global_model.load_state_dict(new_state)
+        return self.global_model
+
+    
+    def train(self, train_schedule: dict, max_local_round: int, threshold: float, patience: int,
+          multithreading: bool = False) -> torch.nn.Module:
 
         for round in range(1, self.rounds + 1):
             logging.info(f"\n=== Global Round {round} ===")
             print(f"\n=== Global Round {round} ===")
-            train_clients_ids = train_schedule.get(str(1), [])
 
-            if not train_clients_ids:
-                logging.warning(f"No clients for round {round}. Skipping.")
+            train_clients_ids = train_schedule.get(str(round), [])
+
+            train_clients = {cid: self.client_dict[cid] for cid in train_clients_ids}
+            self._broadcast(self.global_model, train_clients)
+
+            num_data_points = {}
+
+            for client in train_clients.values():
+                try:
+                    client.train(
+                        round, max_local_round, threshold, patience
+                    )
+                    num_data_points[client.client_id] = client.get_num_datapoints()
+                except Exception as e:
+                    logging.error(f"Client {client.client_id} failed: {e}")
+                    raise
+                logging.info(f"\n")
+
+            total_points = sum(num_data_points.values())
+            if total_points == 0:
+                logging.warning("No data points collected this round.")
                 continue
+
+            # not used by q-FedAvg but passed to keep API consistent
+            weights = [
+                num_data_points[cid] / total_points
+                for cid in train_clients_ids
+            ]
+
+            #   client.get_model()  -> w_k^{t+1}
+            #   client.get_loss_at_global() -> F_k(w^t)
+            self.global_model = self._aggregate(train_clients, weights)
+
+            self.save_checkpt(
+                self.global_model,
+                f"{self.checkpoint_path}/checkpoints/ckpt_{round}.pt"
+            )
+
+        return self.global_model
+
+
+
+class FedProxServer(Server):
+
+    def receive_global(self, model_weights: dict) -> None:
+        try:
+            self.broadcast_model.load_state_dict(model_weights, strict=True)
+        except Exception as e:
+            logging.error(f"Client {self.client_id} broadcast load error: {e}. Keeping old weights.")
+            return
+        self.local_model.load_state_dict(self.broadcast_model.state_dict())
+        # re-init optimizer here to avoid stale momentum/state
+        if isinstance(self.train_dataset, CIFARDataset):
+            self.optimizer = torch.optim.SGD(self.local_model.parameters(), lr=self.optimizer.defaults['lr'],
+                                            weight_decay=self.optimizer.defaults['weight_decay'], momentum=0.9)
+        else:
+            self.optimizer = torch.optim.SGD(self.local_model.parameters(), lr=self.optimizer.defaults['lr'],
+                                            weight_decay=self.optimizer.defaults['weight_decay'])
+
+
+    def _aggregate(self, trained_clients, weights):
+        return weighted_avg(self.global_model, [c.get_model() for c in trained_clients.values()], weights)
+    
+
+    def train(self, train_schedule: dict, max_local_round: int, mu:float, threshold: float=None, patience: int=None,) -> torch.nn.Module:
+        """
+        
+        """
+
+        for round in range(1, self.rounds + 1):
+            logging.info(f"\n=== Global Round {round} ===")
+            train_clients_ids = train_schedule.get(str(1), [])
 
             train_clients = {cid: self.client_dict[cid] for cid in train_clients_ids}
             self._broadcast(self.global_model, train_clients)
 
             num_data_points = {}
             for client in train_clients.values():
-                try:
-                    client.train(round, max_local_round, mu, threshold, patience)
-                    num_data_points[client.client_id] = client.get_num_datapoints()
-                except Exception as e:
-                    logging.error(f"Client {client.client_id} failed: {e}")
-                    print(f"Client {client.client_id} failed: {e}")
+                client.train(round, max_local_round, mu, threshold, patience)
+                num_data_points[client.client_id] = client.get_num_datapoints()
+                logging.info(f"\n")
 
             total_points = sum(num_data_points.values())
             if total_points == 0:
@@ -368,6 +437,7 @@ class FedProxServer(Server):
             self.global_model = self._aggregate(train_clients, weights)
 
             self.save_checkpt(self.global_model, f"{self.checkpoint_path}/checkpoints/ckpt_{round}.pt")
+            
 
 
         return self.global_model
@@ -405,10 +475,10 @@ class DittoServer(Server):
         return self.global_model
 
 
-class FedSMOServer(Server):
+class FedHiKoDServer(Server):
 
     """
-    The federated learning server class for FedSMO.
+    The federated learning server class for FedHiKoD.
     """
 
     def __init__(self, *args, fitness_cfg: FitnessCfg = FitnessCfg(), **kwargs):
@@ -419,10 +489,9 @@ class FedSMOServer(Server):
         self._g_beta = 0.5             # momentum factor for g_EMA
         self._g_num_final_layers = 2   # must match clients' alignment layers
         self._groups: dict[str, int] = {}              # cid -> group id (fixed after round 1)
-        self._prev_leader_states: dict[int, dict] = {} # group id -> leader state_dict from previous round
         self._client_distributions: dict[str, dict[int, float]] = {}
+        self._leader_models_by_group: dict[int, dict] = {}  # gid -> state_dict
   
-    
 
     def flatten_last_modules(self, model: torch.nn.Module, last_n_modules: int | None = None) -> torch.Tensor:
         """
@@ -501,7 +570,7 @@ class FedSMOServer(Server):
         from collections import defaultdict
 
         # Perform linkage using precomputed distances
-        Z = linkage(jsd_condensed, method='average', metric='precomputed')
+        Z = linkage(jsd_condensed, method='average', optimal_ordering=True)
         clusters = fcluster(Z, t=num_clusters, criterion='maxclust')
 
         client_to_cluster = {}
@@ -518,8 +587,6 @@ class FedSMOServer(Server):
         cfg = self.fitness_cfg
         recipe_hash = hashlib.sha256(f"metric:loss|clip:{cfg.clip_range}".encode()).hexdigest()
 
-        g_mom = None if self._g_ema is None else self._g_ema.detach().cpu()
-
         if not hasattr(client, "report_fitness"):
             raise RuntimeError(f"Client {client.client_id} lacks report_fitness()")
         
@@ -527,10 +594,6 @@ class FedSMOServer(Server):
         rpt = client.report_fitness(
             recipe_hash=recipe_hash,
             clip_range=cfg.clip_range,
-            dp_sigma=cfg.dp_sigma,
-            reg_lambda=cfg.reg_lambda,
-            alpha=cfg.alpha if hasattr(cfg, "alpha") else 0.7,  
-            global_momentum_vec=g_mom,  
         )
 
         return rpt
@@ -538,7 +601,7 @@ class FedSMOServer(Server):
  
     def _aggregate(self, trained_clients, weights):
         """
-        Aggregate the models of the clients using FedSMO aggregation strategy.
+        Aggregate the models of the clients using FedHiKoD aggregation strategy.
         """
         return weighted_avg(self.global_model, trained_clients, weights)
 
@@ -563,61 +626,106 @@ class FedSMOServer(Server):
         vals = (vals - vals.min()) / (vals.max() - vals.min() + 1e-8)
         vals = np.clip(vals, 0.1, 1.0)  # keep all clusters active
         return {g: float(vals[i]) for i, g in enumerate(avg_scores.keys())}
+    
 
+    def find_nclasses(self, jsd_condensed):
+        from scipy.cluster.hierarchy import linkage, fcluster
+
+        Z = linkage(jsd_condensed, method='average', optimal_ordering=True)
+
+        best_k, sil_scores = self.evaluate_silhouette_scores(Z, jsd_condensed, k_min=2, k_max=11)
+
+        return best_k, sil_scores
+
+
+    def evaluate_silhouette_scores(self, Z, jsd_condensed, k_min=2, k_max=11):
+        """
+        """
+        from scipy.cluster.hierarchy import fcluster
+        from scipy.spatial.distance import squareform
+        from sklearn.metrics import silhouette_score
+
+        # Convert condensed distances to a full matrix for silhouette_score
+        jsd_matrix = squareform(jsd_condensed)
+        n_samples = jsd_matrix.shape[0]
+
+        sil_scores = {}
+
+        for k in range(k_min, min(k_max, n_samples - 1) + 1):
+            clusters_k = fcluster(Z, k, criterion='maxclust')
+
+            # Skip if clustering degenerates (e.g., all samples in one cluster)
+            if len(np.unique(clusters_k)) < 2:
+                continue
+
+            score = silhouette_score(jsd_matrix, clusters_k, metric='precomputed')
+            sil_scores[k] = score
+
+        best_k = max(sil_scores, key=sil_scores.get)
+
+        return best_k, sil_scores
+    
 
     def train(self, train_schedule: dict, max_local_round: int, threshold: float, patience: int,
               multithreading: bool = False) -> torch.nn.Module:
         
-        import itertools
-        print(self.client_dict)
+        logging.info("Starting FedHiKoD training.............")
+        logging.info(f"Client dict: {self.client_dict}")
+
         self._client_distributions = {}
         for client in self.client_dict.values():
             self._client_distributions[client.client_id] = client.get_class_distribution()
 
+        logging.info(f"Client distributions: {self._client_distributions}")
+
         client_ids, jsd_condensed = self._embed_for_clustering(self._client_distributions, total_classes=10, alpha=1)
-        self._c2g, self._g2c = self.hierarchical_clustering(client_ids, jsd_condensed, 10 )
+        num_clusters, _ = self.find_nclasses(jsd_condensed)
+
+        self._c2g, self._g2c = self.hierarchical_clustering(client_ids, jsd_condensed, num_clusters)
+
+        #self._c2g, self._g2c = self.hierarchical_clustering(client_ids, jsd_condensed, 10)
 
         for round in range(1, self.rounds + 1):
-            logging.info(f"\n=== Global Round {round} ===")
-            print(f"\n=== Global Round {round} ===")
+            logging.info(f"=== Global Round {round} ===")
             train_clients_ids = train_schedule.get(str(round), [])
             reports = {}
 
             train_clients = {cid: self.client_dict[cid] for cid in train_clients_ids}
+            #----------------------------------------------------
+            # Broadcast the global model to all clients
+            #----------------------------------------------------
+
             self._broadcast(self.global_model, train_clients)
-            old_global = copy.deepcopy(self.global_model)
 
             num_data_points = {}
-            data_distributions = {}            
             for client in train_clients.values():
                 
                 leader_state = None
-                ####################################################
-                # Send the leader model to the client if applicable 
-                ####################################################
+                #----------------------------------------------------
+                # Send the leader model to the client if applicable
+                #----------------------------------------------------
                 if round > 1:
                     cid = client.client_id
                     gid = self._c2g[cid]
 
                     # Retrieve and send the leader model
                     if gid in inactive_clusters:
-                        print(f"Client {cid} in inactive cluster {gid}, skipping leader send.")
-                    leader_state = self._prev_leader_states.get(gid)
+                        logging.info(f"Client {cid} in inactive cluster {gid}, skipping leader send.")
+                    leader_state = self._leader_models_by_group.get(gid)
                     if leader_state is None:
-                        print(f"Not Sending leader model to client {cid} from group {gid}.")
+                        logging.info(f"Not Sending leader model to client {cid} from group {gid}.")
                     if leader_state is not None:
                         client.receive_leader(leader_state)
 
-                ################################################
-                # Train the client with FedSMO local updates 
+                #----------------------------------------------------
+                # Train the client with FedHiKoD local updates
                 # receive trained model from client           
                 # receive num of data points and class distribution 
-                ################################################
+                # ----------------------------------------------------
                 client.train(round, 
                             max_local_round)
                 
                 num_data_points[client.client_id] = client.get_num_datapoints()
-                #data_distributions[client.client_id] = client.get_class_distribution()
                 self._client_distributions[client.client_id] = client.get_class_distribution()
 
                 try:
@@ -625,49 +733,48 @@ class FedSMOServer(Server):
                     reports[client.client_id] = score
                 except Exception as e:
                     logging.error(f"Client {client.client_id} reporting failed: {e}")
-
-            print(self._client_distributions)
-
-            #client_ids, jsd_condensed = self._embed_for_clustering(self._client_distributions, total_classes=10, alpha=1)
-
-            #if round == 1:
-            #    self._c2g, self._g2c = self.hierarchical_clustering(client_ids, jsd_condensed, 10 )
-            #else:
-            #    pass
+                logging.info(f"\n")
 
             inactive_clusters = [
                 gid for gid, client_ids in self._g2c.items()
                 if all(cid not in train_clients for cid in client_ids)
             ]
 
-            print("Inactive clusters:", inactive_clusters)
+            logging.info(f"Inactive clusters: {inactive_clusters}")
 
-            # === Build group-aggregated leader models ===
+            # ----------------------------------------------------
+            # Build group-aggregated leader models
+            # ----------------------------------------------------
 
-            leader_models_by_group = {}
+            self._leader_models_by_group = {}
 
             for group_id, client_ids in self._g2c.items():
                 # Keep only clients that participated in this round
                 valid_clients = [cid for cid in client_ids if cid in train_clients]
                 if not valid_clients:
+                    self._leader_models_by_group[group_id] = None
                     continue
 
                 # Prepare list of models and weights for this group
                 group_models = [train_clients[cid].get_model() for cid in valid_clients]
-                group_weights = {
+                group_weights_dict = {
                     cid: num_data_points[cid] / sum(num_data_points[c] for c in valid_clients)
                     for cid in valid_clients
                 }
+                group_weights =[group_weights_dict[cid] for cid in valid_clients]
 
-                # Use your FedSMO aggregation function to build the group leader
-                group_leader = self._aggregate(group_models, list(group_weights.values()))
+                # Build the group leader
+                logging.info("Subglobal (group:%s) model aggregation weights: %s", group_id, group_weights)
+                group_leader = self._aggregate(group_models, group_weights)
 
-                # Store as CPU state_dict (for later KD + proximal use)
-                leader_models_by_group[group_id] = {
-                    k: v.detach().cpu().clone() for k, v in group_leader.state_dict().items()
+                # Store as CPU state_dict (for later KD)
+                self._leader_models_by_group[group_id] = {
+                    k: v.detach().to('cpu', copy=False) for k, v in group_leader.state_dict().items()
                 }
 
             cluster_q = self._cluster_quality(reports, self._c2g)
+            logging.info(f"Cluster Quality: {cluster_q}")
+            logging.info(f"Number of data points: {num_data_points}")
 
             weighted_size = {}
             for cid, n in num_data_points.items():
@@ -681,12 +788,29 @@ class FedSMOServer(Server):
             cid_order = list(train_clients.keys())
             model_list = [train_clients[cid].get_model() for cid in cid_order]
             w_list = [weights[cid] for cid in cid_order]
-            
+
+            logging.info(f"Global model aggregation weights: {w_list}")
             self.global_model = self._aggregate(model_list, w_list)
 
-            self.save_checkpt(self.global_model, f"{self.checkpoint_path}/checkpoints/ckpt_{round}.pt")
+            # No cluster_q needed anymore unless used elsewhere
+            cluster_q = self._cluster_quality(reports, self._c2g)
 
-            self._prev_leader_states = leader_models_by_group
+            #weighted_size = {}
+            #for cid, n in num_data_points.items():
+            #    score = float(reports.get(cid, {}).get("score", 1.0))
+            #    weighted_size[cid] = n * score
+
+            #total_weight = sum(weighted_size.values())
+            #weights = {cid: weighted_size[cid] / total_weight for cid in weighted_size}
+
+            #cid_order = list(train_clients.keys())
+            #model_list = [train_clients[cid].get_model() for cid in cid_order]
+            #w_list = [weights[cid] for cid in cid_order]
+
+            #logging.info(f"Global model aggregation weights: {w_list}")
+            #self.global_model = self._aggregate(model_list, w_list)
+
+            self.save_checkpt(self.global_model, f"{self.checkpoint_path}/checkpoints/ckpt_{round}.pt")
 
             self._prev_cluster_q = getattr(self, "_prev_cluster_q", cluster_q)
             cluster_q = {
@@ -695,9 +819,173 @@ class FedSMOServer(Server):
             }
             self._prev_cluster_q = cluster_q
 
-
         return self.global_model
 
+"""
+    def train(self, train_schedule: dict, max_local_round: int, threshold: float, patience: int,
+              multithreading: bool = False) -> torch.nn.Module:
+        
+        logging.info("Starting FedHiKoD training.............")
+        logging.info(f"Client dict: {self.client_dict}")
+
+        self._client_distributions = {}
+        #for client in self.client_dict.values():
+        #    self._client_distributions[client.client_id] = client.get_class_distribution()
+
+        #logging.info(f"Client distributions: {self._client_distributions}")
+
+        #client_ids, jsd_condensed = self._embed_for_clustering(self._client_distributions, total_classes=10, alpha=1)
+        #self._c2g, self._g2c = self.hierarchical_clustering(client_ids, jsd_condensed, 10)
+
+        # Get the client IDs that will participate in round 1
+        round1_client_ids = set(train_schedule.get(str(1), []))
+        for client in self.client_dict.values():
+            if client.client_id in round1_client_ids:
+                self._client_distributions[client.client_id] = client.get_class_distribution()
+
+        logging.info(f"Client distributions (Round 1 only): {self._client_distributions}")
+
+        client_ids, jsd_condensed = self._embed_for_clustering(self._client_distributions, total_classes=10, alpha=1)
+        #num_clusters, _ = self.find_nclasses(jsd_condensed)
+
+        self._c2g, self._g2c = self.hierarchical_clustering(client_ids, jsd_condensed, 10)
+
+        for round in range(1, self.rounds + 1):
+            logging.info(f"=== Global Round {round} ===")
+            train_clients_ids = train_schedule.get(str(1), [])
+            reports = {}
+
+            train_clients = {cid: self.client_dict[cid] for cid in train_clients_ids}
+            #----------------------------------------------------
+            # Broadcast the global model to all clients
+            #----------------------------------------------------
+
+            self._broadcast(self.global_model, train_clients)
+
+            num_data_points = {}
+            for client in train_clients.values():
+                
+                leader_state = None
+                #----------------------------------------------------
+                # Send the leader model to the client if applicable
+                #----------------------------------------------------
+                if round > 1:
+                    cid = client.client_id
+                    gid = self._c2g[cid]
+
+                    # Retrieve and send the leader model
+                    if gid in inactive_clusters:
+                        logging.info(f"Client {cid} in inactive cluster {gid}, skipping leader send.")
+                    leader_state = self._leader_models_by_group.get(gid)
+                    if leader_state is None:
+                        logging.info(f"Not Sending leader model to client {cid} from group {gid}.")
+                    if leader_state is not None:
+                        client.receive_leader(leader_state)
+
+                #----------------------------------------------------
+                # Train the client with FedHiKoD local updates
+                # receive trained model from client           
+                # receive num of data points and class distribution 
+                # ----------------------------------------------------
+                client.train(round, 
+                            max_local_round)
+                
+                num_data_points[client.client_id] = client.get_num_datapoints()
+                self._client_distributions[client.client_id] = client.get_class_distribution()
+
+                try:
+                    score = self._collect_self_reports(client)
+                    reports[client.client_id] = score
+                except Exception as e:
+                    logging.error(f"Client {client.client_id} reporting failed: {e}")
+                logging.info(f"\n")
+
+            inactive_clusters = [
+                gid for gid, client_ids in self._g2c.items()
+                if all(cid not in train_clients for cid in client_ids)
+            ]
+
+            logging.info(f"Inactive clusters: {inactive_clusters}")
+
+            # ----------------------------------------------------
+            # Build group-aggregated leader models
+            # ----------------------------------------------------
+
+            self._leader_models_by_group = {}
+
+            for group_id, client_ids in self._g2c.items():
+                # Keep only clients that participated in this round
+                valid_clients = [cid for cid in client_ids if cid in train_clients]
+                if not valid_clients:
+                    self._leader_models_by_group[group_id] = None
+                    continue
+
+                # Prepare list of models and weights for this group
+                group_models = [train_clients[cid].get_model() for cid in valid_clients]
+                group_weights_dict = {
+                    cid: num_data_points[cid] / sum(num_data_points[c] for c in valid_clients)
+                    for cid in valid_clients
+                }
+                group_weights =[group_weights_dict[cid] for cid in valid_clients]
+
+                # Build the group leader
+                logging.info("Subglobal (group:%s) model aggregation weights: %s", group_id, group_weights)
+                group_leader = self._aggregate(group_models, group_weights)
+
+                # Store as CPU state_dict (for later KD)
+                self._leader_models_by_group[group_id] = {
+                    k: v.detach().to('cpu', copy=False) for k, v in group_leader.state_dict().items()
+                }
+
+            cluster_q = self._cluster_quality(reports, self._c2g)
+            logging.info(f"Cluster Quality: {cluster_q}")
+            logging.info(f"Number of data points: {num_data_points}")
+
+            weighted_size = {}
+            for cid, n in num_data_points.items():
+                gid = self._c2g.get(cid)
+                q = cluster_q.get(gid, 1.0)
+                weighted_size[cid] = n * q
+
+            total_weight = sum(weighted_size.values())
+            weights = {cid: weighted_size[cid] / total_weight for cid in weighted_size}
+        
+            cid_order = list(train_clients.keys())
+            model_list = [train_clients[cid].get_model() for cid in cid_order]
+            w_list = [weights[cid] for cid in cid_order]
+
+            logging.info(f"Global model aggregation weights: {w_list}")
+            self.global_model = self._aggregate(model_list, w_list)
+
+            # No cluster_q needed anymore unless used elsewhere
+            cluster_q = self._cluster_quality(reports, self._c2g)
+
+            #weighted_size = {}
+            #for cid, n in num_data_points.items():
+            #    score = float(reports.get(cid, {}).get("score", 1.0))
+            #    weighted_size[cid] = n * score
+
+            #total_weight = sum(weighted_size.values())
+            #weights = {cid: weighted_size[cid] / total_weight for cid in weighted_size}
+
+            #cid_order = list(train_clients.keys())
+            #model_list = [train_clients[cid].get_model() for cid in cid_order]
+            #w_list = [weights[cid] for cid in cid_order]
+
+            #logging.info(f"Global model aggregation weights: {w_list}")
+            #self.global_model = self._aggregate(model_list, w_list)
+
+            self.save_checkpt(self.global_model, f"{self.checkpoint_path}/checkpoints/ckpt_{round}.pt")
+
+            self._prev_cluster_q = getattr(self, "_prev_cluster_q", cluster_q)
+            cluster_q = {
+                g: 0.7 * self._prev_cluster_q.get(g, q) + 0.3 * q
+                for g, q in cluster_q.items()
+            }
+            self._prev_cluster_q = cluster_q
+
+        return self.global_model
+"""
 
 
 class BoostingServer(Server):

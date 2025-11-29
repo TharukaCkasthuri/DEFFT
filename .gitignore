@@ -167,6 +167,9 @@ cython_debug/
 .DS_Store
 .ipynb_checkpoints/
 __pycache__/
+
+
+#custom
 *.ipynb
 *.csv
 *.json
@@ -175,3 +178,4 @@ __pycache__/
 *.pptx
 *.pdf
 *.png
+**/experiment_info.txt
