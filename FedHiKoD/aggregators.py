@@ -50,23 +50,6 @@ def fedAvg(global_model: torch.nn.Module, local_models: List[torch.nn.Module]) -
 
 
 def weighted_avg(global_model: torch.nn.Module, local_models: List[torch.nn.Module], weights: List[float]) -> torch.nn.Module:
-    """
-    Average model parameters using weighted averaging.
-    
-    Parameters:
-    ------------
-    global_model: torch.nn.Module object
-        Global model.
-    local_models: list
-        List of local models.
-    weights: list
-        List of weights for each local model.
-    
-    Returns:
-    ------------
-    global_model: torch.nn.Module object
-        Updated global model.
-    """
     #w = torch.tensor(weights, dtype=torch.float32)
     #weights = F.softmax(w, dim=0).tolist()
 
@@ -80,3 +63,58 @@ def weighted_avg(global_model: torch.nn.Module, local_models: List[torch.nn.Modu
             global_model.state_dict()[key].copy_(stacked_params.sum(dim=0))  
 
     return global_model
+
+"""
+def weighted_avg(global_model: torch.nn.Module,
+                 local_models: List[torch.nn.Module],
+                 weights: List[float]) -> torch.nn.Module:
+
+    # Normalize weights into a tensor
+    w = torch.tensor(weights, dtype=torch.float32)
+    w = w / w.sum()
+
+    # Move work to CPU where memory is plentiful
+    # Also stops MPS from hoarding model copies
+    global_model_cpu = global_model.to("cpu")
+    local_states = [m.state_dict() for m in local_models]
+
+    with torch.no_grad():
+        new_state = {}
+        keys = global_model_cpu.state_dict().keys()
+
+        for k in keys:
+            agg = None
+            for wi, state in zip(w, local_states):
+                p = state[k].detach().to("cpu")   # important: avoid MPS
+                if agg is None:
+                    agg = wi * p
+                else:
+                    agg += wi * p
+            new_state[k] = agg
+
+        global_model_cpu.load_state_dict(new_state)
+
+    device = next(global_model.parameters()).device
+    return global_model_cpu.to(device)
+"""
+
+"""
+def weighted_avg(global_model, local_models, weights):
+    state_dicts = [m.state_dict() for m in local_models]
+    new_state = {}
+
+    with torch.no_grad():
+        for key in global_model.state_dict().keys():
+            # Start accumulation with first weighted tensor
+            acc = state_dicts[0][key] * weights[0]
+
+            # Add all remaining weighted tensors
+            for i in range(1, len(state_dicts)):
+                acc += state_dicts[i][key] * weights[i]
+
+            new_state[key] = acc
+
+    # Update the global model IN PLACE
+    global_model.load_state_dict(new_state)
+    return global_model
+"""

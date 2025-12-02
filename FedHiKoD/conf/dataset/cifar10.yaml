@@ -1,11 +1,11 @@
 name: cifar10
-model: CIFAR10ResNet18
-data_dir: datasets/cifar10/alpha_0_2
+model: CIFAR10Net
+data_dir: datasets/cifar10/alpha_0_3
 num_classes: 10
-learning_rate: 0.01
-train_batch_size: 32
+learning_rate: 0.005
+train_batch_size: 64
 test_batch_size: 8
-weight_decay: 0.001
+weight_decay: 5e-4
 client_fraction: 0.6
 ditto_lambda: 0.1
 eta: 0.002

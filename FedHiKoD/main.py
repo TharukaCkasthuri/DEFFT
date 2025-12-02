@@ -37,7 +37,7 @@ from models.kv import ShallowNN
 from models.femnist import FEMNISTNet
 from models.mnist import MNISTNet
 from models.celeba import CELEBANet
-from models.cifar10 import CIFAR10Net, CIFAR10ResNet18
+from models.cifar10 import CIFAR10Net, CIFAR10ResNet18, CIFAR10ResNet18Lite
 from evals import FocalLoss, HybridLoss
 
 from datasets.kv.preprocess import KVDataSet
@@ -423,7 +423,7 @@ def main(cfg):
         f"Loss function: {cfg.loss_function}",
         f"Number of clients: {len(client_ids)}",
         f"Client IDs: {', '.join(client_ids)}",
-        f"train_samples_file: {cfg.dataset.train_samples_file}",
+        f"train_samples_file: {training_samples}",
         f"Global rounds: {cfg.dataset.global_rounds}",
         f"Local rounds: {cfg.dataset.local_rounds}",
         f"Total epochs: {epochs}",
@@ -435,7 +435,7 @@ def main(cfg):
         f"Patience: {cfg.patience}",
         f"Checkpoint path: {checkpt_path}",
         f"Log file: {log_filename}",
-        "Special notes: Controlled Experiment - All clients in 1st round is used for all global epochs"
+        "Special notes: random client selection"
     ]
 
     # Write to file

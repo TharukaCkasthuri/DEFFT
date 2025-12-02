@@ -95,32 +95,18 @@ class Client:
 
         if isinstance(self.train_dataset, CIFARDataset):
             self.optimizer = torch.optim.SGD(
-            self.local_model.parameters(),
-            lr=learning_rate,
-            weight_decay=weight_decay,
-            momentum=0.9,  # Momentum is often used in CIFAR-10 training
-            )            
+                    local_model.parameters(),
+                    lr=learning_rate,
+                    momentum=0.9,
+                    weight_decay=weight_decay,
+                )
+          
         else:
             self.optimizer = torch.optim.SGD(
                 self.local_model.parameters(),
                 lr=learning_rate,
                 weight_decay=weight_decay,
             )
-
-        """ #temporary testing AdamW optimizer
-        self.optimizer = torch.optim.AdamW(
-                self.local_model.parameters(),
-                lr=0.00001,
-                weight_decay=1e-6,
-            )
-        """
-        #temporary testing AdamW optimizer
-        #self.optimizer = torch.optim.AdamW(
-        #        self.local_model.parameters(),
-        #        lr=0.0003,
-        #        weight_decay=1e-6,
-        #    )
-        
 
     def get_num_datapoints(self) -> int:
         """
@@ -536,7 +522,7 @@ class FedHiKoDClient(Client):
         global_round: int,
         max_local_round: int,
         grad_clip: float = 1.0,
-        kd_alpha: float = 0.3,      # KD weight
+        kd_alpha: float = 0.4,      # KD weight
         kd_T: float = 2.0,          # fixed temperature
         use_kd: bool = True,
     ) -> torch.nn.Module:
@@ -609,7 +595,7 @@ class FedHiKoDClient(Client):
             logging.info(
                 f"Client: {self.client_id:<10} Epoch: {epoch + 1:<2} Average Training Loss: {avg_loss:<10.6f} Global Round: {global_round}"
             )
-            self._leader_state = None
+        self._leader_state = None
 
         return self.local_model
       

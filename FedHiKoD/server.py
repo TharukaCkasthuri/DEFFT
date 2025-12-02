@@ -160,9 +160,6 @@ class Server(ABC):
             logging.info(f"\n=== Global Round {round} ===")
             train_clients_ids = train_schedule.get(str(round), [])
 
-            if not train_clients_ids:
-                logging.warning(f"No clients for round {round}. Skipping.")
-                continue
 
             train_clients = {cid: self.client_dict[cid] for cid in train_clients_ids}
             self._broadcast(self.global_model, train_clients)
@@ -185,7 +182,8 @@ class Server(ABC):
 
             weights = [num_data_points[c.client_id] / total_points for c in train_clients.values()]
             logging.info(f"Global model aggregation weights: {weights}")
-            self.global_model = self._aggregate(train_clients, weights)
+            new_global = self._aggregate(train_clients, weights)
+            self.global_model.load_state_dict(new_global.state_dict())
 
             self.save_checkpt(self.global_model, f"{self.checkpoint_path}/checkpoints/ckpt_{round}.pt")
 
@@ -377,7 +375,8 @@ class QFedAvgServer(Server):
 
             #   client.get_model()  -> w_k^{t+1}
             #   client.get_loss_at_global() -> F_k(w^t)
-            self.global_model = self._aggregate(train_clients, weights)
+            new_global = self._aggregate(train_clients, weights)
+            self.global_model.load_state_dict(new_global.state_dict())
 
             self.save_checkpt(
                 self.global_model,
