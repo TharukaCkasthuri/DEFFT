@@ -486,7 +486,7 @@ class FedHiKoDClient(Client):
         return teacher
         
 
-    def adaptive_temperature(round_idx: int,
+    def adaptive_temperature(self, round_idx: int,
                          total_rounds: int,
                          T_min: float = 1.0,
                          T_max: float = 8.0,
@@ -536,7 +536,6 @@ class FedHiKoDClient(Client):
         # ----------------------------
         teacher_leader = self._build_teacher_from_leader() if use_kd else None
 
-
         if not teacher_leader:
             use_kd = False
             logging.info(f"[{self.client_id}] No teacher is available for KD.")
@@ -544,6 +543,15 @@ class FedHiKoDClient(Client):
         # ----------------------------
         # Local training
         # ----------------------------
+
+        kd_T = self.adaptive_temperature(
+            round_idx=global_round,
+            total_rounds=300,  
+            T_min=1.0,
+            T_max=8.0,
+            mode="linear"
+        ) if use_kd else kd_T
+
         for epoch in range(max_local_round):
             batch_loss = []
 

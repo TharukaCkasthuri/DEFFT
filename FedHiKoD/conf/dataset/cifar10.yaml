@@ -3,7 +3,7 @@ model: CIFAR10Net
 data_dir: datasets/cifar10/alpha_0_3
 num_classes: 10
 learning_rate: 0.005
-train_batch_size: 64
+train_batch_size: 32
 test_batch_size: 8
 weight_decay: 5e-4
 client_fraction: 0.6

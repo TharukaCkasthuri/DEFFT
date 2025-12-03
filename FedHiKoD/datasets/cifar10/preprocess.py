@@ -30,14 +30,12 @@ class_mapping = {
     "truck": 9
 }
 
-def load(paths, verbose=-1) -> tuple:
-    """
+""" def load(paths, verbose=-1) -> tuple:
     Loads the images and labels from disk (CIFAR10 version but MNIST-style output)
 
     Returns:
         image_list: list of flattened RGB images normalized to [0,1]
         label_list: list of integer labels
-    """
     data = []
     labels = []
 
@@ -57,7 +55,39 @@ def load(paths, verbose=-1) -> tuple:
         if verbose > 0 and i > 0 and (i + 1) % verbose == 0:
             print(f"[INFO] processed {i+1}/{len(paths)}")
 
+    return data, labels """
+
+CIFAR10_MEAN = torch.tensor([0.4914, 0.4822, 0.4465]).view(3,1,1)
+CIFAR10_STD  = torch.tensor([0.2470, 0.2435, 0.2616]).view(3,1,1)
+
+def load(paths, verbose=-1):
+    data = []
+    labels = []
+
+    for i, imgpath in enumerate(paths):
+        img = cv2.imread(imgpath, cv2.IMREAD_COLOR)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        # HWC → CHW
+        img = torch.from_numpy(img).permute(2, 0, 1).float()
+
+        # [0,255] → [0,1]
+        img = img / 255.0
+
+        # Per-channel standardization
+        img = (img - CIFAR10_MEAN) / CIFAR10_STD
+
+        label_str = imgpath.split(os.path.sep)[-2]
+        label = int(class_mapping[label_str])
+
+        data.append(img)
+        labels.append(label)
+
+        if verbose > 0 and i > 0 and (i + 1) % verbose == 0:
+            print(f"[INFO] processed {i+1}/{len(paths)}")
+
     return data, labels
+
 
 
 def create_clients(image_list: list, label_list: list, num_clients: int, initial: str, save_dir: str, batch_size: int) -> dict:
@@ -280,15 +310,7 @@ class CIFARDataset(Dataset):
         x_train: torch.tensor object; input data
         y_train: torch.tensor object; label
         """
-        image, label = self.data[idx]
-
-        # image is a flattened 32*32*3 vector → reshape
-        image = torch.tensor(image, dtype=torch.float32)
-
-        if image.numel() == 3072:
-            image = image.view(3, 32, 32)  # channel-first
-
-        return image, torch.tensor(label, dtype=torch.long)
+        return self.data[idx]
     
     def num_classes(self) -> int:
         """
@@ -369,7 +391,7 @@ def main():
     parser = argparse.ArgumentParser(description="Preprocess the CIFAR dataset.")
     parser.add_argument("--num_clients", type=int, default=150)
     parser.add_argument("--image_path", type=str, default="/Users/tak/Documents/BTH/cifar10")
-    parser.add_argument("--alpha", type=float, default=0.4                                        )
+    parser.add_argument("--alpha", type=float, default=0.3                                        )
     args = parser.parse_args()
 
     image_path = args.image_path
