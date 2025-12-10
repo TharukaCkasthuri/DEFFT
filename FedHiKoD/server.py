@@ -1125,3 +1125,124 @@ class BoostingServer(Server):
 
         return self.global_model
 
+class FedTiltServer(Server):
+
+    """
+    The federated learning server class for FedTilt.
+    """
+
+    def __init__(self, *args, fitness_cfg: FitnessCfg = FitnessCfg(), **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fitness_cfg = fitness_cfg
+
+        self._g_ema = None             
+        self._g_beta = 0.9             # momentum factor for g_EMA
+    
+
+    def _collect_self_reports(self, client: Client) -> dict[str, dict]:
+        cfg = self.fitness_cfg
+        recipe_hash = hashlib.sha256(f"metric:loss|clip:{cfg.clip_range}".encode()).hexdigest()
+
+        g_mom = None if self._g_ema is None else self._g_ema.detach().cpu()
+
+        if not hasattr(client, "report_fitness"):
+            raise RuntimeError(f"Client {client.client_id} lacks report_fitness()")
+        
+        # these are hyperparams
+        rpt = client.report_fitness(
+            recipe_hash=recipe_hash, 
+        )
+
+        return rpt
+    
+
+    def _fair_hybrid_weights(self, data_weights, client_reports, w_p=1.2, w_f=0.3, gamma=1, lam=None):
+        cids = sorted(data_weights.keys())
+        # 1) soften size prior: p_i ∝ n_i^gamma (gamma=1 → FedAvg; gamma<1 → more client-fair)
+        p_unnorm = {c: float(data_weights[c]) ** gamma for c in cids}
+        Zp = sum(p_unnorm.values()) or 1.0
+        p = {c: p_unnorm[c] / Zp for c in cids}
+
+        # 2) progress + fairness (robust z-score on post_loss)
+        print("client_reports", client_reports)
+        losses = [float(client_reports[c]["post_loss"]) for c in cids]
+        med = statistics.median(losses)
+        mad = statistics.median([abs(x - med) for x in losses]) or 1e-6
+        z = {c: (float(client_reports[c]["post_loss"]) - med) / (mad + 1e-6) for c in cids}
+        prog = {c: float(client_reports[c]["progress"]) for c in cids}
+        #s = {c: w_p * prog[c] + w_f * z[c] for c in cids}
+        s = {c: max(min(w_p*prog[c] + w_f*z[c], 4.0), -4.0) for c in cids}
+
+        # 3) pick lambda robustly (std can be deceiving on non-IID)
+        if lam is None:
+            s_vals = list(s.values())
+            s_med = statistics.median(s_vals)
+            s_mad = statistics.median([abs(v - s_med) for v in s_vals]) or 1e-6
+            lam = 1.4826 * s_mad   # robust std estimate; if tiny, this avoids crazy tilt
+            if lam < 1e-3:
+                lam = 1.0
+
+        # 4) KL-tilt around softened FedAvg prior
+        exps = {c: p[c] * math.exp(s[c] / lam) for c in cids}
+        Z = sum(exps.values()) or 1.0
+        w = {c: exps[c] / Z for c in cids}
+        return cids, w
+ 
+    def _aggregate(self, trained_clients, weights):
+        """
+        Aggregate the models of the clients using FedSMO aggregation strategy.
+        """
+        return weighted_avg(self.global_model, trained_clients, weights)
+
+    
+    def train(self, train_schedule: dict, max_local_round: int, threshold: float, patience: int,
+              multithreading: bool = False) -> torch.nn.Module:
+            
+        for round in range(1, self.rounds + 1):
+            logging.info(f"\n=== Global Round {round} ===")
+            print(f"\n=== Global Round {round} ===")
+            train_clients_ids = train_schedule.get(str(round), [])
+            reports = {}
+
+            train_clients = {cid: self.client_dict[cid] for cid in train_clients_ids}
+            self._broadcast(self.global_model, train_clients)
+
+            num_data_points = {}            
+            for client in train_clients.values():
+                client.train(round, 
+                                max_local_round, 
+                                lambda_l=0.02)
+                num_data_points[client.client_id] = client.get_num_datapoints()
+                
+                try:
+                    score = self._collect_self_reports(client)
+                    reports[client.client_id] = score
+                except Exception as e:
+                    logging.error(f"Client {client.client_id} reporting failed: {e}")
+
+                logging.info(f"\n")
+                print(f"\n")
+
+            total_points = sum(num_data_points.values())
+
+
+            weights = {
+                    cid: num_data_points[cid] / total_points
+                    for cid in train_clients.keys()
+                }
+                        
+            per_weights = {cid: rpt["weight_report"] for cid,rpt in reports.items()}
+
+            _, hybrid_weights = self._fair_hybrid_weights(weights, per_weights)
+
+            print("weights", weights)
+
+            cid_order = list(train_clients.keys())
+            model_list = [train_clients[cid].get_model() for cid in cid_order]
+            w_list = [hybrid_weights[cid] for cid in cid_order]
+            
+            self.global_model = self._aggregate(model_list, w_list)
+
+            self.save_checkpt(self.global_model, f"{self.checkpoint_path}/checkpoints/ckpt_{round}.pt")
+
+        return self.global_model

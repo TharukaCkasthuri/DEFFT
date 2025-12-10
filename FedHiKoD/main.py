@@ -266,6 +266,26 @@ class Federation:
                     local_model= copy.deepcopy(self.model),
                     )
                 )
+
+        elif stratergy == "fedtilt":
+            self.server = FedTiltServer(global_rounds,checkpt_path=checkpt_path)
+            self.server.init_model(model)
+
+            for id in client_ids:
+                self.server.connect_client(
+                    FedTiltClient(
+                    id,
+                    torch.load(f"{train_data_dir}/{id}.pt", weights_only=False),
+                    torch.load(f"{test_data_dir}/{id}.pt", weights_only=False),
+                    self.loss_fn,
+                    self.train_batch_size,
+                    self.test_batch_size,
+                    self.learning_rate,
+                    self.weight_decay,
+                    local_model= copy.deepcopy(self.model),
+                    )
+                )
+                
         else:
                 raise ValueError(f"Invalid stratergy. Choose from: {', '.join([stratergy.value for stratergy in Stratergy])}")
 

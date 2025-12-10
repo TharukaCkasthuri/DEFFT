@@ -888,6 +888,79 @@ class BoostingClient(Client):
         self.weight = self.weight * math.exp(float(self.eta) *  -float(alpha) * int(performance_indicator))
         return self.weight
 
+class FedTiltClient(Client):
+    """
+    FedTilt-specific client that extends the base Client class
+    with privacy-preserving fitness reporting and peer-committee auditing.
+    """
+
+    
+    def report_fitness(self, recipe_hash):
+
+            pre_loss, _  = self.evaluate(broadcast_model=True)   # evaluate before local train in this round
+            post_loss, _ = self.evaluate(broadcast_model=False)  # evaluate after local train
+
+            progress_raw = (pre_loss - post_loss) / max(abs(pre_loss), 1e-6)
+            progress = float(np.clip(progress_raw, -1.0, 1.0))
+
+            return {
+                "client_id": self.client_id,
+                "recipe_hash": recipe_hash,
+                "weight_report": {"client_id": self.client_id, 
+                                  "pre_loss": float(pre_loss), 
+                                  "post_loss": float(post_loss), 
+                                  "progress": float(progress)}
+            }
+
+    def train(
+        self,
+        global_round: int,
+        max_local_round: int,
+        lambda_l: float = 0.0,                  
+        grad_clip: float = 1.0,
+    ) -> torch.nn.Module:
+
+        self.global_model = copy.deepcopy(self.local_model).to(self.device)
+
+        self.local_model.train()
+        for epoch in range(max_local_round):
+            batch_loss = []
+
+            for batch_idx, (x, y) in enumerate(self.traindl):
+                x, y = x.to(self.device), y.to(self.device)
+                outputs = self.local_model(x)
+
+                if isinstance(self.loss_fn, torch.nn.CrossEntropyLoss):
+                    if y.ndim > 1:
+                        if y.size(-1) == 1:
+                            y = y.squeeze(-1)          
+                        else:
+                            y = y.argmax(dim=-1)       
+                    y = y.long()
+                else:
+                    pass
+
+                local_loss = self.loss_fn(outputs, y)
+
+                loss = local_loss 
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.local_model.parameters(), max_norm=grad_clip)
+                self.optimizer.step()
+
+                batch_loss.append(loss.detach().item())
+
+            loss_avg = float(sum(batch_loss) / max(len(batch_loss), 1))
+            logging.info(
+                f"Client: {self.client_id:<10} Epoch: {epoch + 1:<2} "
+                f"FedTilt Train Loss: {loss_avg:<10.6f} Global Round: {global_round}"
+            )
+            print(f"Client: {self.client_id:<10} Epoch: {epoch + 1:<2} "
+                f"FedTilt Train Loss (data): {loss_avg:<10.6f} Global Round: {global_round}")
+
+        return self.local_model
+    
 class DittoClient(Client):
     """
     DittoClient class extends the base Client for Ditto personalized FL.
