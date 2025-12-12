@@ -534,23 +534,24 @@ class FedHiKoDClient(Client):
         # ----------------------------
         # Build teacher models
         # ----------------------------
-        teacher_leader = self._build_teacher_from_leader() if use_kd else None
 
-        if not teacher_leader:
-            use_kd = False
-            logging.info(f"[{self.client_id}] No teacher is available for KD.")
+        if use_kd:
+            teacher_leader = self._build_teacher_from_leader()
+            if not teacher_leader:
+                use_kd = False
+                logging.info(f"[{self.client_id}] Failed to build teacher from leader state. KD disabled.")
 
         # ----------------------------
         # Local training
         # ----------------------------
 
-        kd_T = self.adaptive_temperature(
-            round_idx=global_round,
-            total_rounds=300,  
-            T_min=1.0,
-            T_max=8.0,
-            mode="linear"
-        ) if use_kd else kd_T
+        #kd_T = self.adaptive_temperature(
+        #    round_idx=global_round,
+        #    total_rounds=300,  
+        #    T_min=1.0,
+        #    T_max=8.0,
+        #    mode="linear"
+        #) if use_kd else kd_T
 
         for epoch in range(max_local_round):
             batch_loss = []
@@ -579,6 +580,7 @@ class FedHiKoDClient(Client):
                     with torch.no_grad():
                         leader_logits = teacher_leader(x)
                     kd_term = self._kd_loss(student_logits, leader_logits, temperature=kd_T)
+                    logging.debug(f"[{self.client_id}] KD term: {kd_term.item():.6f}")  
                 else:
                     kd_term = torch.tensor(0.0, device=self.device)
 
@@ -603,8 +605,8 @@ class FedHiKoDClient(Client):
             logging.info(
                 f"Client: {self.client_id:<10} Epoch: {epoch + 1:<2} Average Training Loss: {avg_loss:<10.6f} Global Round: {global_round}"
             )
-        self._leader_state = None
 
+        self._leader_state = None
         return self.local_model
       
 class BoostingClient(Client):

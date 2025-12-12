@@ -680,13 +680,13 @@ class FedHiKoDServer(Server):
         client_ids, jsd_condensed = self._embed_for_clustering(self._client_distributions, total_classes=10, alpha=1)
         num_clusters, _ = self.find_nclasses(jsd_condensed)
 
+        logging.info(f"Determined number of clusters: {num_clusters}")
+
         self._c2g, self._g2c = self.hierarchical_clustering(client_ids, jsd_condensed, num_clusters)
 
-        #self._c2g, self._g2c = self.hierarchical_clustering(client_ids, jsd_condensed, 10)
-
-        for round in range(1, self.rounds + 1):
-            logging.info(f"=== Global Round {round} ===")
-            train_clients_ids = train_schedule.get(str(round), [])
+        for r in range(1, self.rounds + 1):
+            logging.info(f"=== Global Round {r} ===")
+            train_clients_ids = train_schedule.get(str(r), [])
             reports = {}
 
             train_clients = {cid: self.client_dict[cid] for cid in train_clients_ids}
@@ -703,7 +703,7 @@ class FedHiKoDServer(Server):
                 #----------------------------------------------------
                 # Send the leader model to the client if applicable
                 #----------------------------------------------------
-                if round > 1:
+                if r > 10:
                     cid = client.client_id
                     gid = self._c2g[cid]
 
@@ -721,7 +721,7 @@ class FedHiKoDServer(Server):
                 # receive trained model from client           
                 # receive num of data points and class distribution 
                 # ----------------------------------------------------
-                client.train(round, 
+                client.train(r, 
                             max_local_round)
                 
                 num_data_points[client.client_id] = client.get_num_datapoints()

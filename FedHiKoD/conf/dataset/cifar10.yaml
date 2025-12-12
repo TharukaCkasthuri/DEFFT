@@ -1,6 +1,6 @@
 name: cifar10
 model: CIFAR10Net
-data_dir: datasets/cifar10/alpha_0_3
+data_dir: datasets/cifar10/alpha_0_1
 num_classes: 10
 learning_rate: 0.005
 train_batch_size: 32

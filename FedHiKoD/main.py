@@ -29,8 +29,8 @@ from omegaconf import OmegaConf
 
 import numpy as np
 
-from clients import Client, BoostingClient, DittoClient, FedHiKoDClient, FedProxClient, QFFedAvgClient
-from server import FedAvgServer, BoostingServer, DittoServer, FedHiKoDServer, FedProxServer, QFedAvgServer
+from clients import Client, BoostingClient, DittoClient, FedHiKoDClient, FedProxClient, QFFedAvgClient, FedTiltClient
+from server import FedAvgServer, BoostingServer, DittoServer, FedHiKoDServer, FedProxServer, QFedAvgServer, FedTiltServer
 from utils import get_device, get_client_ids
 
 from models.kv import ShallowNN
@@ -494,7 +494,7 @@ def main(cfg):
     logging.info(f"Weight decay: {cfg.dataset.weight_decay}")
     logging.info(f"Eta: {cfg.dataset.eta}")
     logging.info(f"Patience: {cfg.patience}")
-    logging.info(f"Checkpoint path: {os.path.join(cfg.checkpt_root, cfg.dataset.name)}")
+    logging.info(f"Checkpoint path: {checkpt_path}")
     logging.info(f"Log file: {log_filename}")
     logging.info("Special notes: Controlled Experiment - All clients in 1st round is used for all global epochs")
 
