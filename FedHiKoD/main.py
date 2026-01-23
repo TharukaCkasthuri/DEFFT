@@ -123,43 +123,35 @@ class Federation:
         client_ids: list,
         model: torch.nn.Module,
         loss_fn: torch.nn.Module,
-        train_data_dir: str,
-        test_data_dir: str,
-        num_classes: int,
-        global_rounds: int,
-        stratergy: callable,
-        learning_rate: float,
-        train_batch_size: int,
-        test_batch_size: int,
-        weight_decay: float,
-        eta: float,
-        error_threshold: float,
+        cfg,
         checkpt_path: str,
     ) -> None:
         
         self.client_ids = client_ids
-        self.num_classes = num_classes
+        self.train_data_dir = f"{cfg.dataset.data_dir}/trainpt"
+        self.test_data_dir = f"{cfg.dataset.data_dir}/testpt"
+        self.num_classes = cfg.dataset.num_classes
         self.model = model
         self.loss_fn = loss_fn
-        self.global_rounds = global_rounds
-        self.stratergy = stratergy
-        self.learning_rate = learning_rate
-        self.train_batch_size = train_batch_size
-        self.test_batch_size = test_batch_size
-        self.weight_decay = weight_decay
-        self.eta = eta
-        self.error_threshold = error_threshold
+        self.global_rounds = cfg.dataset.global_rounds
+        self.stratergy = cfg.stratergy.lower()
+        self.learning_rate = cfg.dataset.learning_rate
+        self.train_batch_size = cfg.dataset.train_batch_size
+        self.test_batch_size = cfg.dataset.test_batch_size
+        self.weight_decay = cfg.dataset.weight_decay
+        self.eta = cfg.dataset.eta
+        self.error_threshold = cfg.dataset.error_threshold
 
-        if stratergy == "fedaboost":
-            self.server = BoostingServer(global_rounds, stratergy, checkpt_path=checkpt_path)
+        if self.stratergy == "fedaboost":
+            self.server = BoostingServer(self.global_rounds, self.stratergy, checkpt_path=checkpt_path)
             self.server.init_model(model)
 
             # Set up the clients for fedaboost server
             for id in client_ids:
                 self.server.connect_client(BoostingClient(
                     id,
-                    torch.load(f"{train_data_dir}/{id}.pt", weights_only=False),
-                    torch.load(f"{test_data_dir}/{id}.pt", weights_only=False),
+                    torch.load(f"{self.train_data_dir}/{id}.pt", weights_only=False),
+                    torch.load(f"{self.test_data_dir}/{id}.pt", weights_only=False),
                     self.loss_fn,
                     self.train_batch_size,
                     self.test_batch_size,
@@ -171,16 +163,16 @@ class Federation:
                     error_threshold=self.error_threshold,
                 ))
 
-        elif stratergy == "fedavg":
-            self.server = FedAvgServer(global_rounds,checkpt_path=checkpt_path)
-            self.server.init_model(model)
+        elif self.stratergy == "fedavg":
+            self.server = FedAvgServer(self.global_rounds,checkpt_path=checkpt_path)
+            self.server.init_model(self.model)
 
             # Set up the clients for fedavg server
             for id in client_ids:
                 self.server.connect_client(Client(
                     id,
-                    torch.load(f"{train_data_dir}/{id}.pt", weights_only=False),
-                    torch.load(f"{test_data_dir}/{id}.pt", weights_only=False),
+                    torch.load(f"{self.train_data_dir}/{id}.pt", weights_only=False),
+                    torch.load(f"{self.test_data_dir}/{id}.pt", weights_only=False),
                     self.loss_fn,
                     self.train_batch_size,
                     self.test_batch_size,
@@ -189,15 +181,15 @@ class Federation:
                     local_model= copy.deepcopy(self.model),
                 ))
 
-        elif stratergy == "fedprox":
-            self.server = FedProxServer(global_rounds, checkpt_path=checkpt_path)
-            self.server.init_model(model)
+        elif self.stratergy == "fedprox":
+            self.server = FedProxServer(self.global_rounds, checkpt_path=checkpt_path)
+            self.server.init_model(self.model)
 
             for id in client_ids:
                 self.server.connect_client(FedProxClient(
                     id,
-                    torch.load(f"{train_data_dir}/{id}.pt", weights_only=False),
-                    torch.load(f"{test_data_dir}/{id}.pt", weights_only=False),
+                    torch.load(f"{self.train_data_dir}/{id}.pt", weights_only=False),
+                    torch.load(f"{self.test_data_dir}/{id}.pt", weights_only=False),
                     self.loss_fn,
                     self.train_batch_size,
                     self.test_batch_size,
@@ -206,34 +198,36 @@ class Federation:
                     local_model= copy.deepcopy(self.model),
                 ))
 
-        elif stratergy == "fedhikod":
-            self.server = FedHiKoDServer(global_rounds,checkpt_path=checkpt_path)
-            self.server.init_model(model)
+        elif self.stratergy == "fedhikod":
+            self.server = FedHiKoDServer(self.global_rounds,checkpt_path=checkpt_path,beta=cfg.dataset.fedhikod.beta)
+            self.server.init_model(self.model)
 
             # Set up the clients for fedhikod server
             for id in client_ids:
                 self.server.connect_client(FedHiKoDClient(
                     id,
-                    torch.load(f"{train_data_dir}/{id}.pt", weights_only=False),
-                    torch.load(f"{test_data_dir}/{id}.pt", weights_only=False),
+                    torch.load(f"{self.train_data_dir}/{id}.pt", weights_only=False),
+                    torch.load(f"{self.test_data_dir}/{id}.pt", weights_only=False),
                     self.loss_fn,
                     self.train_batch_size,
                     self.test_batch_size,
                     self.learning_rate,
                     self.weight_decay,
                     local_model= copy.deepcopy(self.model),
+                    kd_alpha=cfg.dataset.fedhikod.kd_alpha,
+                    kd_T=cfg.dataset.fedhikod.kd_temp,
                 ))
 
-        elif stratergy == "ditto":
-            self.server = FedAvgServer(global_rounds, checkpt_path=checkpt_path)
-            self.server.init_model(model)
+        elif self.stratergy == "ditto":
+            self.server = FedAvgServer(self.global_rounds, checkpt_path=checkpt_path)
+            self.server.init_model(self.model)
 
             for id in client_ids:
                 self.server.connect_client(
                     DittoClient(
                         client_id=id,
-                        train_dataset=torch.load(f"{train_data_dir}/{id}.pt", weights_only=False),
-                        test_dataset=torch.load(f"{test_data_dir}/{id}.pt", weights_only=False),
+                        train_dataset=torch.load(f"{self.train_data_dir}/{id}.pt", weights_only=False),
+                        test_dataset=torch.load(f"{self.test_data_dir}/{id}.pt", weights_only=False),
                         loss_fn=self.loss_fn,
                         train_batch_size=self.train_batch_size,
                         test_batch_size=self.test_batch_size,
@@ -248,16 +242,16 @@ class Federation:
                     )
                 )
 
-        elif stratergy == "qfedavg":
-            self.server = QFedAvgServer(global_rounds,checkpt_path=checkpt_path)
-            self.server.init_model(model)
+        elif self.stratergy == "qfedavg":
+            self.server = QFedAvgServer(self.global_rounds,checkpt_path=checkpt_path, q=cfg.dataset.qfedavg_q)
+            self.server.init_model(self.model)
 
             for id in client_ids:
                 self.server.connect_client(
                     QFFedAvgClient(
                     id,
-                    torch.load(f"{train_data_dir}/{id}.pt", weights_only=False),
-                    torch.load(f"{test_data_dir}/{id}.pt", weights_only=False),
+                    torch.load(f"{self.train_data_dir}/{id}.pt", weights_only=False),
+                    torch.load(f"{self.test_data_dir}/{id}.pt", weights_only=False),
                     self.loss_fn,
                     self.train_batch_size,
                     self.test_batch_size,
@@ -267,16 +261,16 @@ class Federation:
                     )
                 )
 
-        elif stratergy == "fedtilt":
-            self.server = FedTiltServer(global_rounds,checkpt_path=checkpt_path)
-            self.server.init_model(model)
+        elif self.stratergy == "fedtilt":
+            self.server = FedTiltServer(self.global_rounds,checkpt_path=checkpt_path)
+            self.server.init_model(self.model)
 
             for id in client_ids:
                 self.server.connect_client(
                     FedTiltClient(
                     id,
-                    torch.load(f"{train_data_dir}/{id}.pt", weights_only=False),
-                    torch.load(f"{test_data_dir}/{id}.pt", weights_only=False),
+                    torch.load(f"{self.train_data_dir}/{id}.pt", weights_only=False),
+                    torch.load(f"{self.test_data_dir}/{id}.pt", weights_only=False),
                     self.loss_fn,
                     self.train_batch_size,
                     self.test_batch_size,
@@ -418,17 +412,7 @@ def main(cfg):
         client_ids=client_ids,
         model=model,
         loss_fn=loss_fn,
-        train_data_dir=train_data_dir,
-        test_data_dir=test_data_dir,
-        num_classes=cfg.dataset.num_classes,
-        global_rounds=global_rounds,
-        stratergy=strartegy,
-        learning_rate=cfg.dataset.learning_rate,
-        train_batch_size=cfg.dataset.train_batch_size,
-        test_batch_size=cfg.dataset.test_batch_size,
-        weight_decay=cfg.dataset.weight_decay,
-        eta=cfg.dataset.eta,
-        error_threshold=cfg.dataset.error_threshold,
+        cfg=cfg,
         checkpt_path=checkpt_path,
     )
 
@@ -443,7 +427,7 @@ def main(cfg):
         f"Loss function: {cfg.loss_function}",
         f"Number of clients: {len(client_ids)}",
         f"Client IDs: {', '.join(client_ids)}",
-        f"train_samples_file: {training_samples}",
+        f"train_samples_file: {cfg.dataset.train_samples_file}",
         f"Global rounds: {cfg.dataset.global_rounds}",
         f"Local rounds: {cfg.dataset.local_rounds}",
         f"Total epochs: {epochs}",
@@ -485,6 +469,7 @@ def main(cfg):
     logging.info(f"Loss function: {cfg.loss_function}")
     logging.info(f"Number of clients: {len(client_ids)}")
     logging.info(f"Client IDs: {', '.join(client_ids)}")
+    logging.info(f"train_samples_file: {cfg.dataset.train_samples_file}")
     logging.info(f"Global rounds: {cfg.dataset.global_rounds}")
     logging.info(f"Local rounds: {cfg.dataset.local_rounds}")
     logging.info(f"Total epochs: {epochs}")
@@ -496,7 +481,7 @@ def main(cfg):
     logging.info(f"Patience: {cfg.patience}")
     logging.info(f"Checkpoint path: {checkpt_path}")
     logging.info(f"Log file: {log_filename}")
-    logging.info("Special notes: Controlled Experiment - All clients in 1st round is used for all global epochs")
+    logging.info("Special notes: QfedAVG with q=0.5")
 
     start = time.time()
     # Train
