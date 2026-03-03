@@ -108,7 +108,26 @@ class FEMNISTDataset(Dataset):
         """
         sample_x = self.x[idx]
         sample_y = self.y[idx]
-        return torch.tensor(sample_x, dtype=torch.float32), torch.tensor(sample_y, dtype=torch.long)
+
+        x = torch.tensor(sample_x, dtype=torch.float32)
+
+        if x.numel() == 3072:
+            # 32x32x3 → grayscale 28x28
+            x = x.view(3, 32, 32).mean(dim=0)  # RGB → gray
+            x = torch.nn.functional.interpolate(
+                x.unsqueeze(0).unsqueeze(0),
+                size=(28, 28),
+                mode="bilinear",
+                align_corners=False
+            ).squeeze()
+        elif x.numel() != 784:
+            raise RuntimeError(f"Invalid FEMNIST input size: {x.numel()}")
+
+        x = x.view(-1)  # flatten to 784
+        y = torch.tensor(sample_y, dtype=torch.long)
+
+        return x, y
+
     
     def num_classes(self) -> int:
         """
