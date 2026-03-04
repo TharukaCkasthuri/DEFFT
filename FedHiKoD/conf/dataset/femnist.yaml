@@ -2,12 +2,51 @@ name: femnist
 model: FEMNISTNet
 data_dir: datasets/femnist
 num_classes: 62
-learning_rate: 0.001
+learning_rate: 0.01
 train_batch_size: 64
 test_batch_size: 8
-weight_decay: 0.0005
+weight_decay: 0.0001
 client_fraction: 0.2
 ditto_lambda: 0.1
 error_threshold: 0.3
 eta: 0.01
-train_samples_file: training_samples_v1.json
+train_samples_file: training_samples_v4.json
+global_rounds: 150
+local_rounds: 5
+qfedavg_q: 0.3
+fedhikod:
+  beta: 0.1
+  kd_alpha: 0.3
+  kd_temp: 3.5 #before I used 2.0
+
+
+# Additional Context V2 version was kd_alpha: 0.3 and kd_tem: 2.0
+
+# v4 beta: 0.2
+#  kd_alpha: 0.3
+ # kd_temp: 2.0
+
+ #v5 beta: 0.1
+  # kd_alpha: 0.3
+  # kd_temp: 2.0
+
+#v6 beta: 0.2
+ # kd_alpha: 0.6
+ # kd_temp: 4.0
+
+
+#v7 beta: 0.1
+ # kd_alpha: 0.6
+ # kd_temp: 4.0
+
+#v8 fedhikod:
+#  beta: 0.1
+#  kd_alpha: adaptive based on ema loss
+ # kd_temp: 2.0
+
+#v9 fedhikod:no kd, just clustering and weighting based on cluster quality
+ #v10 fedhikod updated clustering and cluster quality computed with q_exp=1.0
+ #v11 fedhikod no kd, old, 9 clustering, and cluster quality computed with q_exp=1.0 without random seed
+
+
+ # update training samples, currently only version 2 we have

@@ -1,5 +1,5 @@
 defaults:
-  - dataset: cifar10   # default dataset
+  - dataset: femnist   # default dataset
   - _self_
 
 # Checkpoint + logging paths
@@ -11,4 +11,4 @@ save_ckpt: true
 log_summary: true
 stratergy: fedhikod
 loss_function: CrossEntropyLoss
-version: v3
+version: v4_new

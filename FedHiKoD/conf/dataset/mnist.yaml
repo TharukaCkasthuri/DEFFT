@@ -11,6 +11,11 @@ ditto_lambda: 0.2
 error_threshold: 0.3
 eta: 0.01
 momentum: 0.0
-train_samples_file: training_samples_v1.json
+train_samples_file: training_samples_ctrl.json
 global_rounds: 300
 local_rounds: 5
+qfedavg_q: 0.5
+fedhikod:
+  beta: 0.5
+  kd_alpha: 0.1
+  kd_temp: 2.0

@@ -21,6 +21,7 @@ Published in:
 import os
 import torch
 import itertools
+import json
 
 import numpy as np
 import pandas as pd
@@ -139,6 +140,28 @@ def get_alpha_emp(error_fun: list, num_classes: int = 10, emphasis_factor: float
     alpha = [w / np.sum(alpha) for w in alpha]
 
     return alpha
+
+def save_client_distributions(distributions: dict, file_path: str) -> None:
+    """
+    Save client class distributions to a JSON file.
+
+    Args:
+        distributions (dict): {client_id: class_distribution}
+        file_path (str): Path to the output JSON file
+    """
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+    def _to_json_safe(obj):
+        if hasattr(obj, "item"):  # numpy scalar
+            return obj.item()
+        if isinstance(obj, dict):
+            return {k: _to_json_safe(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [_to_json_safe(v) for v in obj]
+        return obj
+
+    with open(file_path, "w") as f:
+        json.dump(_to_json_safe(distributions), f, indent=2)
 
 
 def get_alpha(error_fun: dict, num_classes: int = 10) -> dict:
