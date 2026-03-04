@@ -27,8 +27,8 @@ from omegaconf import OmegaConf
 
 import numpy as np
 
-from clients import Client, BoostingClient, DittoClient, FedHiKoDClient, FedProxClient, QFFedAvgClient, FedTiltClient
-from server import FedAvgServer, BoostingServer, DittoServer, FedHiKoDServer, FedProxServer, QFedAvgServer, FedTiltServer
+from clients import Client, FedHiKoDClient, FedProxClient, QFFedAvgClient
+from server import FedAvgServer, FedHiKoDServer, FedProxServer, QFedAvgServer
 from utils import get_device, get_client_ids
 
 from models.kv import ShallowNN
@@ -138,28 +138,7 @@ class Federation:
         self.eta = cfg.dataset.eta
         self.error_threshold = cfg.dataset.error_threshold
 
-        if self.stratergy == "fedaboost":
-            self.server = BoostingServer(self.global_rounds, self.stratergy, checkpt_path=checkpt_path)
-            self.server.init_model(model)
-
-            # Set up the clients for fedaboost server
-            for id in client_ids:
-                self.server.connect_client(BoostingClient(
-                    id,
-                    torch.load(f"{self.train_data_dir}/{id}.pt", weights_only=False),
-                    torch.load(f"{self.test_data_dir}/{id}.pt", weights_only=False),
-                    self.loss_fn,
-                    self.train_batch_size,
-                    self.test_batch_size,
-                    self.learning_rate,
-                    self.weight_decay,
-                    local_model= copy.deepcopy(self.model),
-                    num_classes=self.num_classes,
-                    eta=self.eta,
-                    error_threshold=self.error_threshold,
-                ))
-
-        elif self.stratergy == "fedavg":
+        if self.stratergy == "fedavg":
             self.server = FedAvgServer(self.global_rounds,checkpt_path=checkpt_path)
             self.server.init_model(self.model)
 
@@ -214,30 +193,6 @@ class Federation:
                     kd_T=cfg.dataset.fedhikod.kd_temp,
                 ))
 
-        elif self.stratergy == "ditto":
-            self.server = FedAvgServer(self.global_rounds, checkpt_path=checkpt_path)
-            self.server.init_model(self.model)
-
-            for id in client_ids:
-                self.server.connect_client(
-                    DittoClient(
-                        client_id=id,
-                        train_dataset=torch.load(f"{self.train_data_dir}/{id}.pt", weights_only=False),
-                        test_dataset=torch.load(f"{self.test_data_dir}/{id}.pt", weights_only=False),
-                        loss_fn=self.loss_fn,
-                        train_batch_size=self.train_batch_size,
-                        test_batch_size=self.test_batch_size,
-                        learning_rate=self.learning_rate,
-                        weight_decay=self.weight_decay,
-                        local_model=copy.deepcopy(self.model),
-                        personal_learning_rate=0.001,
-                        ditto_lambda=0.1,
-                        personalized=True,
-                        checkpt_path=checkpt_path,
-
-                    )
-                )
-
         elif self.stratergy == "qfedavg":
             self.server = QFedAvgServer(self.global_rounds,checkpt_path=checkpt_path, q=cfg.dataset.qfedavg_q)
             self.server.init_model(self.model)
@@ -256,26 +211,7 @@ class Federation:
                     local_model= copy.deepcopy(self.model),
                     )
                 )
-
-        elif self.stratergy == "fedtilt":
-            self.server = FedTiltServer(self.global_rounds,checkpt_path=checkpt_path)
-            self.server.init_model(self.model)
-
-            for id in client_ids:
-                self.server.connect_client(
-                    FedTiltClient(
-                    id,
-                    torch.load(f"{self.train_data_dir}/{id}.pt", weights_only=False),
-                    torch.load(f"{self.test_data_dir}/{id}.pt", weights_only=False),
-                    self.loss_fn,
-                    self.train_batch_size,
-                    self.test_batch_size,
-                    self.learning_rate,
-                    self.weight_decay,
-                    local_model= copy.deepcopy(self.model),
-                    )
-                )
-                
+   
         else:
                 raise ValueError(f"Invalid stratergy. Choose from: {', '.join([stratergy.value for stratergy in Stratergy])}")
 
