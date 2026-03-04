@@ -30,7 +30,6 @@ from torch.utils.data import DataLoader
 from utils import get_device
 from datasets.mnist.preprocess import MNISTDataset
 from datasets.femnist.preprocess import FEMNISTDataset
-from datasets.celeba.preprocess import CELEBADataset
 from datasets.cifar10.preprocess import CIFARDataset
 from sklearn.metrics import f1_score, accuracy_score
 import torch.nn.functional as F
