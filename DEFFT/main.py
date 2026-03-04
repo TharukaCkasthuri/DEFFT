@@ -36,14 +36,12 @@ from utils import get_device, get_client_ids
 from models.kv import ShallowNN
 from models.femnist import FEMNISTNet
 from models.mnist import MNISTNet
-from models.celeba import CELEBANet
 from models.cifar10 import CIFAR10Net, CIFAR10ResNet18, CIFAR10ResNet18Lite
 from evals import FocalLoss, HybridLoss
 
 from datasets.kv.preprocess import KVDataSet
 from datasets.femnist.preprocess import FEMNISTDataset
 from datasets.mnist.preprocess import MNISTDataset
-from datasets.celeba.preprocess import CELEBADataset
 from datasets.cifar10.preprocess import CIFARDataset
 
 import hydra

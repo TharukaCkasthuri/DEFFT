@@ -29,7 +29,6 @@ from sklearn.metrics import accuracy_score, f1_score
 
 from datasets.femnist.preprocess import FEMNISTDataset
 from datasets.mnist.preprocess import MNISTDataset
-from datasets.celeba.preprocess import CELEBADataset
 from datasets.cifar10.preprocess import CIFARDataset
 
 def evaluate(
