@@ -1,5 +1,5 @@
 """
-Copyright (C) [2023] [Tharuka Kasthuriarachchige]
+Copyright (C) [2026] Annonymous Author
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -11,11 +11,8 @@ but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-Paper: [FeDABoost: AdaBoost Enhanced Federated Learning]
-Published in: 
+Paper: Hierarchical Knowledge Distillation for Fair Federated Learning
+Submitted to: ECML-PKDD 2026 
 """
 import torch
 import numpy as np
