@@ -196,7 +196,7 @@ class Federation:
                     local_model= copy.deepcopy(self.model),
                 ))
 
-        elif self.stratergy == "fedhikod":
+        elif self.stratergy == "defft":
             self.server = FedHiKoDServer(self.global_rounds,checkpt_path=checkpt_path,beta=cfg.dataset.fedhikod.beta)
             self.server.init_model(self.model)
 
