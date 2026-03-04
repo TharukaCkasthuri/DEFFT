@@ -92,21 +92,13 @@ class Client:
             train_dataset, train_batch_size, shuffle=True, drop_last=False
         )
         self.valdl = DataLoader(test_dataset, test_batch_size, shuffle=False, drop_last=False)
-
-        if isinstance(self.train_dataset, CIFARDataset):
-            self.optimizer = torch.optim.SGD(
-                    local_model.parameters(),
-                    lr=learning_rate,
-                    momentum=0.9,
-                    weight_decay=weight_decay,
-                )
           
-        else:
-            self.optimizer = torch.optim.SGD(
-                self.local_model.parameters(),
-                lr=learning_rate,
-                weight_decay=weight_decay,
-            )
+        self.optimizer = torch.optim.SGD(
+            self.local_model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay,
+            momentum=0.9
+        )
 
     def get_num_datapoints(self) -> int:
         """
@@ -211,7 +203,7 @@ class Client:
         return self.local_model
 
 
-    def evaluate(self, broadcast_model: bool = False, data_split: str = "validation") -> tuple:
+    def evaluate(self, broadcast_model: bool = False, data_split: str = "train") -> tuple:
         """
         Evaluate the client local model.
 
@@ -231,7 +223,12 @@ class Client:
         correct = 0
         total = 0
 
-        data = self.valdl if data_split == "validation" else self.traindl
+        if data_split == "train":
+            data = self.traindl
+        elif data_split == "val":
+            data = self.valdl
+        else:
+            raise ValueError(f"Unknown data_split: {data_split}")
 
         with torch.no_grad():
             for x, y in data:
@@ -371,7 +368,7 @@ class QFFedAvgClient(Client):
         model: torch.nn.Module object; trained model.
         """
         
-        self.pre_loss_at_global, _  = self.evaluate(broadcast_model=True)
+        self.pre_loss_at_global, _  = self.evaluate(broadcast_model=True, data_split="val")
         self.local_model.train()
 
         for epoch in range(max_local_round):
@@ -424,6 +421,7 @@ class FedHiKoDClient(Client):
         self.kd_T = kd_T
         self.use_kd = use_kd
         self._leader_state = None  # holds the current group's leader weights
+        self.ema_cluster_loss = None  # holds the EMA of cluster loss
 
     def get_loss_at_global(self):
         return self.post_loss_at_global
@@ -492,7 +490,6 @@ class FedHiKoDClient(Client):
         - {"state_dict": ..., "class_support": ...}
         """
         self._leader_state = None
-        self.cluster_class_support = None  # <-- add this attribute
 
         if leader_payload is None:
             return
@@ -500,11 +497,9 @@ class FedHiKoDClient(Client):
         # New format
         if "state_dict" in leader_payload:
             leader_weights = leader_payload["state_dict"]
-            class_support = leader_payload.get("class_support", None)
         else:
             # Backward compatible: assume payload is a raw state_dict
             leader_weights = leader_payload
-            class_support = None
 
         # Store weights
         self._leader_state = {
@@ -512,11 +507,7 @@ class FedHiKoDClient(Client):
             for k, v in leader_weights.items()
         }
 
-        # Store class support mask if provided
-        if class_support is not None:
-            self.cluster_class_support = (
-                class_support if torch.is_tensor(class_support) else torch.as_tensor(class_support)
-            ).float().to(self.device)
+        self.ema_cluster_loss = leader_payload.get("ema_cluster_loss", None)
 
 
     def _build_teacher_from_leader(self) -> torch.nn.Module | None:
@@ -567,8 +558,8 @@ class FedHiKoDClient(Client):
         T = temperature
 
         # normalize logits to prevent scale collapse
-        s_log = student_logits / (student_logits.std(dim=1, keepdim=True) + 1e-6)
-        t_log = teacher_logits / (teacher_logits.std(dim=1, keepdim=True) + 1e-6)
+        s_log = student_logits #/ (student_logits.std(dim=1, keepdim=True) + 1e-6)
+        t_log = teacher_logits #/ (teacher_logits.std(dim=1, keepdim=True) + 1e-6)
 
         log_p_s = F.log_softmax(s_log / T, dim=1)
         p_t = F.softmax(t_log / T, dim=1)
@@ -592,6 +583,29 @@ class FedHiKoDClient(Client):
         # ----------------------------
         # Build teacher models
         # ----------------------------
+        # compute pre-loss on global model
+        self.preloss, _ = self.evaluate(broadcast_model=True, data_split="val")
+
+        if self.use_kd and self.ema_cluster_loss is not None:
+            delta = (self.preloss - self.ema_cluster_loss) / (self.ema_cluster_loss + 1e-8)
+
+            progress = global_round / 150
+
+            alpha_base = 0.5
+            slope = 0.3
+            alpha_min = 0.3
+            alpha_max = 0.75 #- 0.25 * progress   # decay KD late
+
+            if delta <= 0:
+                # client is at or better than its cluster → do NOT regularize it
+                self.kd_alpha = 0.3
+            else:
+                # struggling client → strong, bounded KD
+                self.kd_alpha= float(
+                    np.clip(alpha_base + slope * delta, alpha_min, alpha_max)
+                )
+        else:
+            self.kd_alpha = self.kd_alpha
 
         if use_kd:
             teacher_leader = self._build_teacher_from_leader()
@@ -661,7 +675,8 @@ class FedHiKoDClient(Client):
             )
 
         self._leader_state = None
-        self.post_loss_at_global, _  = self.evaluate(broadcast_model=False)
+        self.post_loss_at_global, _  = self.evaluate(broadcast_model=False, data_split="val")
+
         return self.local_model
       
 class BoostingClient(Client):

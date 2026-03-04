@@ -38,14 +38,9 @@ def get_client_ids(folder_path):
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Federated training parameters")
-    parser.add_argument("--dir", type=str, default="cifar10/alpha_0_1", help="Choose a dataset from the available options; femnist, mnist, kv, celeba, cifar10")
-    parser.add_argument("--client_fraction", type=float, default=0.4)
+    parser.add_argument("--dir", type=str, default="femnist", help="Choose a dataset from the available options; femnist, mnist, kv, celeba, cifar10")
+    parser.add_argument("--client_fraction", type=float, default=0.1)
     return parser.parse_args()
-
-def load_config(config_path="../config.cfg"):
-    config = configparser.ConfigParser()
-    config.read(config_path)
-    return config
 
 def main():
     args = parse_arguments()
@@ -56,7 +51,7 @@ def main():
 
     training_samples = {i: sample_clients(client_ids, client_fraction) for i in range(1, 501)}
     training_samples = {key: value.tolist() if isinstance(value, np.ndarray) else value for key, value in training_samples.items()}
-    output_file = f"{folder_path}/training_samples_v5.json"
+    output_file = f"{folder_path}/training_samples_v1.json"
 
     with open(output_file, 'w') as f:
         json.dump(training_samples, f, indent=4)

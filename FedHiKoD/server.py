@@ -39,6 +39,9 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from scipy.cluster.hierarchy import linkage, fcluster
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from sklearn.mixture import GaussianMixture
 
 
 from clients import Client
@@ -47,9 +50,10 @@ from aggregators import weighted_avg
 from datasets.femnist.preprocess import FEMNISTDataset
 from datasets.mnist.preprocess import MNISTDataset
 from datasets.cifar10.preprocess import CIFARDataset
-from utils import stable_hash
+from utils import stable_hash, save_client_distributions
 from typing import Tuple, Dict
 from config import FitnessCfg
+from scipy.stats import entropy
 
 class Server(ABC):
     """
@@ -161,7 +165,7 @@ class Server(ABC):
 
         for round in range(1, self.rounds + 1):
             logging.info(f"\n=== Global Round {round} ===")
-            train_clients_ids = train_schedule.get(str(1), [])
+            train_clients_ids = train_schedule.get(str(round), [])
 
 
             train_clients = {cid: self.client_dict[cid] for cid in train_clients_ids}
@@ -352,7 +356,7 @@ class QFedAvgServer(Server):
             logging.info(f"\n=== Global Round {round} ===")
             print(f"\n=== Global Round {round} ===")
 
-            train_clients_ids = train_schedule.get(str(1), [])
+            train_clients_ids = train_schedule.get(str(round), [])
 
             train_clients = {cid: self.client_dict[cid] for cid in train_clients_ids}
             self._broadcast(self.global_model, train_clients)
@@ -506,6 +510,7 @@ class FedHiKoDServer(Server):
         for cid in client_ids:
             counts = np.array([distributions[cid].get(i, 0) for i in range(total_classes)], dtype=float)
             counts += alpha  # Laplace smoothing
+            print(f"Client {cid} counts before normalization: {counts}")
             counts /= counts.sum()
             vectors.append(counts)
 
@@ -518,9 +523,20 @@ class FedHiKoDServer(Server):
         """
         Perform hierarchical clustering based on JSD distances.
         """
-        jsd_threshold, Z = self._find_jsd_threshold(jsd_condensed, method="average", trim_frac=0.95)
+        jsd_threshold, Z = self._find_jsd_threshold(jsd_condensed, method="average")
 
-        clusters = fcluster(Z, t=jsd_threshold, criterion='distance')
+        logging.info(f"JSD distance threshold for clustering: {jsd_threshold:.4f}")
+
+        clusters = fcluster(Z, t=498, criterion='distance')
+        _, counts = np.unique(clusters, return_counts=True)
+
+        singleton_frac = np.mean(counts == 1)
+
+        if singleton_frac > 0.25:
+            # gently relax, not jump to the top
+            T = np.quantile(Z[:, 2], 0.88)
+            clusters = fcluster(Z, t=0.35, criterion="distance")
+
 
         client_to_cluster = {}
         cluster_to_clients = defaultdict(list)
@@ -530,6 +546,80 @@ class FedHiKoDServer(Server):
             cluster_to_clients[cluster_id].append(cid)
 
         return client_to_cluster, cluster_to_clients
+
+    def gmm_clustering(self,
+        client_ids,
+        X,
+        k_min=2,
+        k_max=10,
+        pca_dim=None,
+        random_state=0,
+        min_cluster_frac=0.01
+    ):
+        """
+        Perform GMM-based clustering on client embeddings.
+
+        Returns:
+            client_to_cluster: dict {client_id -> cluster_id}
+            cluster_to_clients: dict {cluster_id -> list(client_ids)}
+        """
+
+        # Standardize features
+        scaler = StandardScaler()
+        Xs = scaler.fit_transform(X)
+
+        # PCA (denoising)
+        if pca_dim is not None:
+            pca = PCA(n_components=pca_dim, random_state=random_state)
+            Xs = pca.fit_transform(Xs)
+
+        # Fit GMMs and select K via BIC
+        bics = []
+        models = []
+
+        for k in range(k_min, k_max + 1):
+            gmm = GaussianMixture(
+                n_components=k,
+                covariance_type="full",
+                n_init=10,
+                random_state=random_state
+            )
+            gmm.fit(Xs)
+            bics.append(gmm.bic(Xs))
+            models.append(gmm)
+
+        best_idx = int(np.argmin(bics))
+        best_k = best_idx + k_min
+        gmm = models[best_idx]
+
+        logging.info(f"Selected number of clusters (BIC): {best_k}")
+
+        # Predict cluster labels
+        labels = gmm.predict(Xs)
+
+        # mappings
+        client_to_cluster = {}
+        cluster_to_clients = defaultdict(list)
+
+        for cid, cluster_id in zip(client_ids, labels):
+            client_to_cluster[cid] = int(cluster_id)
+            cluster_to_clients[int(cluster_id)].append(cid)
+
+        #  detect tiny clusters
+        n_clients = len(client_ids)
+        tiny_clusters = [
+            k for k, v in cluster_to_clients.items()
+            if len(v) / n_clients < min_cluster_frac
+        ]
+
+        if tiny_clusters:
+            logging.warning(
+                f"Detected very small clusters: "
+                f"{ {k: len(cluster_to_clients[k]) for k in tiny_clusters} }"
+            )
+
+        return client_to_cluster, cluster_to_clients
+
 
 
     def _collect_self_reports(self, client: Client) -> dict[str, dict]:
@@ -547,12 +637,108 @@ class FedHiKoDServer(Server):
 
         return rpt
 
-    
-    def _aggregate(self, trained_clients, weights):
+    def __embed_femnist_client(self, dist, num_labels=62):
         """
-        Aggregate the models of the clients using FedHiKoD aggregation strategy.
+        dist: dict {label(str or int): count}
+        returns: 1D numpy array (client embedding)
         """
-        return weighted_avg(self.global_model, trained_clients, weights)
+
+        # build full histogram
+        counts = np.zeros(num_labels, dtype=float)
+        for k, v in dist.items():
+            counts[int(k)] = v
+
+        total = counts.sum()
+        if total == 0:
+            raise ValueError("Client has no samples")
+
+        p = counts / total
+
+        # semantic mass
+        digit_mass = p[0:10].sum()
+        lower_mass = p[10:36].sum()
+        upper_mass = p[36:62].sum()
+
+        # concentration
+        ent = entropy(p + 1e-12)
+        top1 = np.max(p)
+        top5 = np.sort(p)[-5:].sum()
+
+        # scale
+        log_n = np.log1p(total)
+
+        return np.array([
+            digit_mass,
+            lower_mass,
+            upper_mass,
+            ent,
+            top1,
+            top5,
+            log_n
+        ])
+
+    def _femnist_embeddings(self, distributions):
+        client_ids = list(distributions.keys())
+        X = np.vstack([
+            self.__embed_femnist_client(distributions[cid])
+            for cid in client_ids
+        ])
+        return X, client_ids
+
+
+    def _aggregate(
+        self,
+        trained_clients: dict,
+        weights: dict
+    ) -> torch.nn.Module:
+        """
+        Weighted FedAvg aggregation.
+
+        trained_clients: dict[client_id -> client]
+        weights: dict[client_id -> float]
+        """
+        device = self.device
+
+        # snapshot global params w^t
+        global_state = {
+            name: param.detach().clone().to(device)
+            for name, param in self.global_model.state_dict().items()
+            if torch.is_floating_point(param)
+        }
+
+        # initialize accumulators
+        delta_sum = {
+            name: torch.zeros_like(param, device=device)
+            for name, param in global_state.items()
+        }
+        weight_sum = 0.0
+
+        for cid, client in trained_clients.items():
+            w_k = weights.get(cid, 0.0)
+            if w_k <= 0:
+                continue
+
+            weight_sum += w_k
+
+            local_state = {
+                name: p.detach().clone().to(device)
+                for name, p in client.get_model().state_dict().items()
+                if torch.is_floating_point(p)
+            }
+
+            for name in global_state.keys():
+                delta_sum[name] += w_k * (global_state[name] - local_state[name])
+
+        if weight_sum == 0.0:
+            logging.warning("FedAvg: weight_sum == 0, skipping update")
+            return self.global_model
+
+        new_state = self.global_model.state_dict()
+        for name, w_t in global_state.items():
+            new_state[name] = w_t - delta_sum[name] / weight_sum
+
+        self.global_model.load_state_dict(new_state)
+        return self.global_model
 
 
     def _cluster_quality_old(self, reports: dict[str, dict], c2g: dict[str, int]) -> dict[int, float]:
@@ -658,17 +844,7 @@ class FedHiKoDServer(Server):
         return {g: float(norm[i]) for i, g in enumerate(ema_loss.keys())}
 
 
-    def find_nclasses(self, jsd_condensed):
-        from scipy.cluster.hierarchy import linkage
-
-        Z = linkage(jsd_condensed, method='average', optimal_ordering=True)
-
-        best_k, sil_scores = self.evaluate_silhouette_scores(Z, jsd_condensed, k_min=2, k_max=20)
-
-        return best_k, sil_scores
-
-
-    def _find_jsd_threshold(self, jsd_condensed, method="average", trim_frac=0.95):
+    def _find_jsd_threshold_old(self, jsd_condensed, method="average", trim_frac=0.95):
         """
         Returns a dendrogram distance threshold based on the largest merge gap.
 
@@ -700,6 +876,24 @@ class FedHiKoDServer(Server):
         k = np.argmax(gaps)
 
         return trimmed[k], Z
+
+    def _find_jsd_threshold(self, jsd_condensed, method="average",
+                            q_low=0.70, q_high=0.95):
+        Z = linkage(jsd_condensed, method=method)
+        m = np.sort(Z[:, 2])
+
+        n = len(m)
+        lo = int(n * q_low)
+        hi = int(n * q_high)
+        hi = max(hi, lo + 2)  # ensure room for diffs
+
+        window = m[lo:hi]
+        gaps = np.diff(window)
+        k = int(np.argmax(gaps))
+
+        T = window[k]   # cut at the left value of max gap
+        return T, Z
+
     
     
     def train(self, train_schedule: dict, max_local_round: int, threshold: float, patience: int,
@@ -713,16 +907,39 @@ class FedHiKoDServer(Server):
             self._client_distributions[client.client_id] = client.get_class_distribution()
 
         logging.info(f"Client distributions: {self._client_distributions}")
+        save_client_distributions(self._client_distributions, f"datasets/femnist/client_distributions_round.json")
 
-        client_ids, jsd_condensed = self._embed_for_clustering(self._client_distributions, total_classes=10, alpha=0)
+        if isinstance(next(iter(self.client_dict.values())).train_dataset, FEMNISTDataset):
+            X, client_ids = self._femnist_embeddings(self._client_distributions)
+            self._c2g, self._g2c = self.gmm_clustering(client_ids,
+                        X,
+                        k_min=2,
+                        k_max=10,
+                        pca_dim=3,
+                        random_state=0)
+        else:
+            client_ids, jsd_condensed = self._embed_for_clustering(self._client_distributions, total_classes=62, alpha=0)
+            self._c2g, self._g2c = self.hierarchical_clustering(client_ids, jsd_condensed)
 
-        self._c2g, self._g2c = self.hierarchical_clustering(client_ids, jsd_condensed)
+        from collections import Counter
+        sizes = Counter(self._c2g.values())
+        sizes_list = list(sizes.values())
+
+        num_singletons = sum(s == 1 for s in sizes_list)
+        singleton_frac = num_singletons / len(sizes_list)
+
+        logging.info(
+            f"Group sizes (min/median/max): "
+            f"{np.min(sizes_list)}, {np.median(sizes_list)}, {np.max(sizes_list)} | "
+            f"Singletons: {num_singletons} ({singleton_frac:.2%})"
+        )
 
         logging.info(f"Client to group mapping: {self._c2g}")
+        logging.info(f"Number of groups formed: {len(self._g2c)}")
 
         for r in range(1, self.rounds + 1):
             logging.info(f"=== Global Round {r} ===")
-            train_clients_ids = train_schedule.get(str(1), [])
+            train_clients_ids = train_schedule.get(str(r), [])
             reports = {}
 
             train_clients = {cid: self.client_dict[cid] for cid in train_clients_ids}
@@ -752,6 +969,7 @@ class FedHiKoDServer(Server):
                     if leader_state is not None:
                         payload = {
                             "state_dict": leader_state,
+                            "ema_cluster_loss": ema_loss[gid],
                         }
                         client.receive_leader(payload)
 
@@ -798,7 +1016,11 @@ class FedHiKoDServer(Server):
                     continue
 
                 # Prepare list of models and weights for this group
-                group_models = [train_clients[cid].get_model() for cid in valid_clients]
+                #group_models = [train_clients[cid].get_model() for cid in valid_clients]
+                group_clients = {
+                    cid: train_clients[cid]
+                    for cid in valid_clients
+                }
                 group_weights_dict = {
                     cid: num_data_points[cid] / sum(num_data_points[c] for c in valid_clients)
                     for cid in valid_clients
@@ -812,7 +1034,7 @@ class FedHiKoDServer(Server):
                  for cid in client_ids 
                  if cid in train_clients}
                 
-                group_leader = self._aggregate(group_models, group_weights)
+                group_leader = self._aggregate(group_clients, group_weights_dict)
 
                 # Store as CPU state_dict (for later KD)
                 self._leader_models_by_group[group_id] = {
@@ -821,7 +1043,7 @@ class FedHiKoDServer(Server):
 
             cluster_loss = self._cluster_loss(reports, self._c2g)
             ema_loss = self._ema_cluster_loss(cluster_loss, beta=self.beta)
-            cluster_q = self._cluster_quality_from_loss(ema_loss, alpha=1.0)
+            cluster_q = self._cluster_quality_from_loss(ema_loss, alpha=1.0, q_exp=3, R=3.0)
             logging.info(f"Cluster Quality at round {r}: {cluster_q}")
             logging.info(f"Number of data points: {num_data_points}")
 
@@ -839,7 +1061,7 @@ class FedHiKoDServer(Server):
             w_list = [weights[cid] for cid in cid_order]
 
             logging.info(f"Global model aggregation weights: {w_list}")
-            self.global_model = self._aggregate(model_list, weights=w_list)            
+            self.global_model = self._aggregate(train_clients, weights=weights)            
 
             self.save_checkpt(self.global_model, f"{self.checkpoint_path}/checkpoints/ckpt_{r}.pt")
 
@@ -1404,8 +1626,6 @@ class FedHiKoDServerOld(Server):
         logging.info(f"Client distributions: {self._client_distributions}")
 
         client_ids, jsd_condensed = self._embed_for_clustering(self._client_distributions, total_classes=10, alpha=1)
-        #num_clusters, sil_scores = self.find_nclasses(jsd_condensed)
-
         #logging.info(f"Determined number of clusters: {num_clusters}")
         #logging.info(f"Silhouette scores for different cluster counts: {sil_scores}")
 
