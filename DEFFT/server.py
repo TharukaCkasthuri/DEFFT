@@ -49,7 +49,6 @@ from datasets.mnist.preprocess import MNISTDataset
 from datasets.cifar10.preprocess import CIFARDataset
 from utils import stable_hash, save_client_distributions
 from typing import Tuple, Dict
-from config import FitnessCfg
 from scipy.stats import entropy
 
 class Server(ABC):
@@ -444,9 +443,9 @@ class FedProxServer(Server):
         return self.global_model
 
 
-class FedHiKoDServer(Server):
+class DefftServer(Server):
     """
-    The federated learning server class for FedHiKoD.
+    The federated learning server class for Defft.
     """
     def __init__(
         self,
@@ -586,23 +585,6 @@ class FedHiKoDServer(Server):
 
         return client_to_cluster, cluster_to_clients
 
-
-
-    def _collect_self_reports(self, client: Client) -> dict[str, dict]:
-        cfg = self.fitness_cfg
-        recipe_hash = hashlib.sha256(f"metric:loss|clip:{cfg.clip_range}".encode()).hexdigest()
-
-        if not hasattr(client, "report_fitness"):
-            raise RuntimeError(f"Client {client.client_id} lacks report_fitness()")
-        
-        # these are hyperparams
-        rpt = client.report_fitness(
-            recipe_hash=recipe_hash,
-            clip_range=cfg.clip_range,
-        )
-
-        return rpt
-
     def __embed_femnist_client(self, dist, num_labels=62):
         """
         dist: dict {label(str or int): count}
@@ -658,7 +640,7 @@ class FedHiKoDServer(Server):
         weights: dict
     ) -> torch.nn.Module:
         """
-        Weighted FedAvg aggregation.
+        Weighted aggregation.
 
         trained_clients: dict[client_id -> client]
         weights: dict[client_id -> float]
@@ -696,7 +678,7 @@ class FedHiKoDServer(Server):
                 delta_sum[name] += w_k * (global_state[name] - local_state[name])
 
         if weight_sum == 0.0:
-            logging.warning("FedAvg: weight_sum == 0, skipping update")
+            logging.warning("weight_sum == 0, skipping update")
             return self.global_model
 
         new_state = self.global_model.state_dict()
@@ -705,63 +687,6 @@ class FedHiKoDServer(Server):
 
         self.global_model.load_state_dict(new_state)
         return self.global_model
-
-
-    def _cluster_quality_old(self, reports: dict[str, dict], c2g: dict[str, int]) -> dict[int, float]:
-        """
-        Aggregate client 'score' values into per-cluster quality.
-        Normalizes to [0.1, 1.0] to avoid zero weights.
-        """
-
-        cluster_scores = defaultdict(list)
-        for cid, rpt in reports.items():
-            gid = c2g.get(cid)
-            score = float(rpt.get("score", 0.0))
-            cluster_scores[gid].append(score)
-
-        if not cluster_scores:
-            return {}
-
-        avg_scores = {g: np.mean(v) for g, v in cluster_scores.items()}
-        vals = np.array(list(avg_scores.values()))
-        vals = (vals - vals.min()) / (vals.max() - vals.min() + 1e-8)
-        vals = np.clip(vals, 0.1, 1.0)  # keep all clusters active
-        return {g: float(vals[i]) for i, g in enumerate(avg_scores.keys())}
-    
-    def _cluster_quality(self, reports: dict[str, float],
-                     c2g: dict[str, int],
-                     q: float = 1.0,
-                     eps: float = 1e-6) -> dict[int, float]:
-        """
-        Compute cluster quality q_g ∝ (ℓ_g + eps)^q
-        where ℓ_g is mean post-training loss of clients in cluster g.
-
-        Returns normalized weights in [0.1, 1.0].
-        """
-
-        cluster_losses = defaultdict(list)
-
-        for cid, loss in reports.items():
-            if cid not in c2g:
-                continue
-            gid = c2g[cid]
-            cluster_losses[gid].append(float(loss))
-
-        if not cluster_losses:
-            return {}
-
-        # ℓ_g
-        avg_loss = {g: np.mean(v) for g, v in cluster_losses.items()}
-
-        # (ℓ_g + eps)^q
-        raw = np.array([(v + eps) ** q for v in avg_loss.values()], dtype=np.float64)
-
-        # normalize to [0.1, 1.0]
-        mn, mx = raw.min(), raw.max()
-        norm = (raw - mn) / (mx - mn + 1e-12)
-        norm = 0.1 + 0.9 * norm   # scale instead of clip
-
-        return {g: float(norm[i]) for i, g in enumerate(avg_loss.keys())}
     
     def _cluster_loss(self, reports: dict[str, float], c2g: dict[str, int]) -> dict[int, float]:
         cluster_losses = defaultdict(list)
@@ -783,25 +708,9 @@ class FedHiKoDServer(Server):
     def _cluster_quality_from_loss(self,
                                ema_loss: dict[int, float],
                                q_exp: float = 1,
-                               eps: float = 1e-6,
-                               alpha: float = 0.2,
-                               R: float = 3.0) -> dict[int, float]:
+                               eps: float = 1e-6) -> dict[int, float]:
 
-        #raw = {g: (l + eps) ** q_exp for g, l in ema_loss.items()}
         raw = np.array([(v + eps) ** q_exp for v in ema_loss.values()], dtype=np.float64)
-
-        #vals = np.array(list(raw.values()), dtype=np.float64)
-        #vals /= vals.mean()  # normalize around 1
-
-        # cap ratio
-        #mx, mn = vals.max(), vals.min()
-        #if mx / (mn + 1e-12) > R:
-        #    vals = np.clip(vals, mx / R, mx)
-
-        # α-mix with FedAvg (weight=1)
-        #vals = (1 - alpha) * 1.0 + alpha * vals
-
-        #return {g: float(vals[i]) for i, g in enumerate(raw.keys())}
 
         mn, mx = raw.min(), raw.max()
         norm = (raw - mn) / (mx - mn + 1e-12)
@@ -809,39 +718,6 @@ class FedHiKoDServer(Server):
 
         return {g: float(norm[i]) for i, g in enumerate(ema_loss.keys())}
 
-
-    def _find_jsd_threshold_old(self, jsd_condensed, method="average", trim_frac=0.95):
-        """
-        Returns a dendrogram distance threshold based on the largest merge gap.
-
-        Parameters
-        ----------
-        jsd_condensed : ndarray
-            Condensed distance matrix (pdist format) of JSD distances.
-        method : str
-            Linkage method, default 'average'.
-        trim_frac : float
-            Fraction of smallest merge distances to keep to avoid root outliers.
-
-        Returns
-        -------
-        jsd_threshold : float
-            Distance at which to cut the dendrogram.
-        Z : ndarray
-            Linkage matrix for reuse.
-        """
-
-        Z = linkage(jsd_condensed, method=method)
-        merge_dists = np.sort(Z[:, 2])
-
-        # Trim pathological root merges
-        cutoff = int(len(merge_dists) * trim_frac)
-        trimmed = merge_dists[:cutoff]
-
-        gaps = np.diff(trimmed)
-        k = np.argmax(gaps)
-
-        return trimmed[k], Z
 
     def _find_jsd_threshold(self, jsd_condensed, method="average",
                             q_low=0.70, q_high=0.95):
@@ -865,7 +741,7 @@ class FedHiKoDServer(Server):
     def train(self, train_schedule: dict, max_local_round: int, threshold: float, patience: int,
               multithreading: bool = False) -> torch.nn.Module:
         
-        logging.info("Starting FedHiKoD training.............")
+        logging.info("Starting Defft training.............")
         logging.info(f"Client dict: {self.client_dict}")
 
         self._client_distributions = {}
@@ -875,6 +751,11 @@ class FedHiKoDServer(Server):
         logging.info(f"Client distributions: {self._client_distributions}")
         save_client_distributions(self._client_distributions, f"datasets/femnist/client_distributions_round.json")
 
+        #----------------------------------------------------------------------------------------------------------------------------------------
+        # For the first round, we cluster clients based on their class distributions and assign group leaders.
+        # The clustering is fixed for subsequent rounds.
+        # We  use different clustering methods for FEMNIST (GMM on semantic embeddings) vs others (hierarchical on JSD of full distributions).  
+        #----------------------------------------------------------------------------------------------------------------------------------------
         if isinstance(next(iter(self.client_dict.values())).train_dataset, FEMNISTDataset):
             X, client_ids = self._femnist_embeddings(self._client_distributions)
             self._c2g, self._g2c = self.gmm_clustering(client_ids,
@@ -887,6 +768,9 @@ class FedHiKoDServer(Server):
             client_ids, jsd_condensed = self._embed_for_clustering(self._client_distributions, total_classes=62, alpha=0)
             self._c2g, self._g2c = self.hierarchical_clustering(client_ids, jsd_condensed)
 
+        #--------------------------------------------------------------------
+        # log cluster size stats 
+        #--------------------------------------------------------------------
         from collections import Counter
         sizes = Counter(self._c2g.values())
         sizes_list = list(sizes.values())
@@ -899,7 +783,9 @@ class FedHiKoDServer(Server):
             f"{np.min(sizes_list)}, {np.median(sizes_list)}, {np.max(sizes_list)} | "
             f"Singletons: {num_singletons} ({singleton_frac:.2%})"
         )
-
+        #----------------------------------------------------------------------------
+        # log client to group mapping
+        #----------------------------------------------------------------------------
         logging.info(f"Client to group mapping: {self._c2g}")
         logging.info(f"Number of groups formed: {len(self._g2c)}")
 
@@ -912,7 +798,6 @@ class FedHiKoDServer(Server):
             #----------------------------------------------------
             # Broadcast the global model to all clients
             #----------------------------------------------------
-
             self._broadcast(self.global_model, train_clients)
 
             num_data_points = {}
@@ -940,7 +825,7 @@ class FedHiKoDServer(Server):
                         client.receive_leader(payload)
 
                 #----------------------------------------------------
-                # Train the client with FedHiKoD local updates
+                # Train the client with Defft local updates
                 # receive trained model from client           
                 # receive num of data points and class distribution 
                 # ----------------------------------------------------
@@ -948,12 +833,12 @@ class FedHiKoDServer(Server):
                             max_local_round)
                 
                 num_data_points[client.client_id] = client.get_num_datapoints()
-                self._client_distributions[client.client_id] = client.get_class_distribution()
 
                 try:
-                    #score = self._collect_self_reports(client)
                     score = client.get_loss_at_global()
                     reports[client.client_id] = score
+                    logging.info("Reporting client %s (group %s): loss at global = %.4f, num_data_points = %d",
+                                client.client_id, self._c2g[client.client_id], score, num_data_points[client.client_id])
 
                 except Exception as e:
                     logging.error(f"Client {client.client_id} reporting failed: {e}")
@@ -963,8 +848,6 @@ class FedHiKoDServer(Server):
                 gid for gid, client_ids in self._g2c.items()
                 if all(cid not in train_clients for cid in client_ids)
             ]
-
-            print(f"Reports: {reports}")
 
             logging.info(f"Inactive clusters: {inactive_clusters}")
 
@@ -976,30 +859,26 @@ class FedHiKoDServer(Server):
 
             for group_id, client_ids in self._g2c.items():
                 # Keep only clients that participated in this round
-                valid_clients = [cid for cid in client_ids if cid in train_clients]
+                valid_clients = {
+                    cid: train_clients[cid]
+                    for cid in client_ids
+                    if cid in train_clients
+                }
+
                 if not valid_clients:
                     self._leader_models_by_group[group_id] = None
                     continue
 
                 # Prepare list of models and weights for this group
-                #group_models = [train_clients[cid].get_model() for cid in valid_clients]
-                group_clients = {
-                    cid: train_clients[cid]
-                    for cid in valid_clients
-                }
+                total_points = sum(num_data_points[cid] for cid in valid_clients)
+
                 group_weights_dict = {
-                    cid: num_data_points[cid] / sum(num_data_points[c] for c in valid_clients)
+                    cid: num_data_points[cid] / total_points
                     for cid in valid_clients
                 }
-                group_weights =[group_weights_dict[cid] for cid in valid_clients]
 
                 # Build the group leader
-                logging.info("Subglobal (group:%s) model aggregation weights: %s", group_id, group_weights)
-
-                valid_clients = {cid: train_clients[cid] 
-                 for cid in client_ids 
-                 if cid in train_clients}
-                
+                logging.info("Subglobal (group:%s) model aggregation weights: %s", group_id, group_weights_dict)
                 group_leader = self._aggregate(group_clients, group_weights_dict)
 
                 # Store as CPU state_dict (for later KD)
@@ -1009,7 +888,7 @@ class FedHiKoDServer(Server):
 
             cluster_loss = self._cluster_loss(reports, self._c2g)
             ema_loss = self._ema_cluster_loss(cluster_loss, beta=self.beta)
-            cluster_q = self._cluster_quality_from_loss(ema_loss, alpha=1.0, q_exp=3, R=3.0)
+            cluster_q = self._cluster_quality_from_loss(ema_loss, q_exp=3)
             logging.info(f"Cluster Quality at round {r}: {cluster_q}")
             logging.info(f"Number of data points: {num_data_points}")
 

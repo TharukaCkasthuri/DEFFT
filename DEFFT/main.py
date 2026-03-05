@@ -27,8 +27,8 @@ from omegaconf import OmegaConf
 
 import numpy as np
 
-from clients import Client, FedHiKoDClient, FedProxClient, QFFedAvgClient
-from server import FedAvgServer, FedHiKoDServer, FedProxServer, QFedAvgServer
+from clients import Client, DefftClient, FedProxClient, QFFedAvgClient
+from server import FedAvgServer, DefftServer, FedProxServer, QFedAvgServer
 from utils import get_device, get_client_ids
 
 from models.kv import ShallowNN
@@ -174,12 +174,12 @@ class Federation:
                 ))
 
         elif self.stratergy == "defft":
-            self.server = FedHiKoDServer(self.global_rounds,checkpt_path=checkpt_path,beta=cfg.dataset.fedhikod.beta)
+            self.server = DefftServer(self.global_rounds,checkpt_path=checkpt_path,beta=cfg.dataset.defft.beta)
             self.server.init_model(self.model)
 
-            # Set up the clients for fedhikod server
+            # Set up the clients for defft server
             for id in client_ids:
-                self.server.connect_client(FedHiKoDClient(
+                self.server.connect_client(DefftClient(
                     id,
                     torch.load(f"{self.train_data_dir}/{id}.pt", weights_only=False),
                     torch.load(f"{self.test_data_dir}/{id}.pt", weights_only=False),
@@ -189,8 +189,8 @@ class Federation:
                     self.learning_rate,
                     self.weight_decay,
                     local_model= copy.deepcopy(self.model),
-                    kd_alpha=cfg.dataset.fedhikod.kd_alpha,
-                    kd_T=cfg.dataset.fedhikod.kd_temp,
+                    kd_alpha=cfg.dataset.defft.kd_alpha,
+                    kd_T=cfg.dataset.defft.kd_temp,
                 ))
 
         elif self.stratergy == "qfedavg":
