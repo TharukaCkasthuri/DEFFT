@@ -14,7 +14,7 @@ train_samples_file: training_samples_v4.json
 global_rounds: 150
 local_rounds: 5
 qfedavg_q: 0.3
-fedhikod:
+defft:
   beta: 0.1
   kd_alpha: 0.3
   kd_temp: 3.5 #before I used 2.0
@@ -49,4 +49,4 @@ fedhikod:
  #v11 fedhikod no kd, old, 9 clustering, and cluster quality computed with q_exp=1.0 without random seed
 
 
- # update training samples, currently only version 2 we have
+ # update training samples, currently only version 2 

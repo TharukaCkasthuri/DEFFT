@@ -403,9 +403,9 @@ class QFFedAvgClient(Client):
 
         return self.local_model
 
-class FedHiKoDClient(Client):
+class DefftClient(Client):
     """
-    FedHiKoD-specific client that extends the base Client class
+    Defft-specific client that extends the base Client class
     with privacy-preserving fitness reporting and peer-committee auditing.
     """
 
@@ -572,7 +572,7 @@ class FedHiKoDClient(Client):
         use_kd: bool = True,
     ) -> torch.nn.Module:
 
-        # snapshot the global model for FedHiKoD's delta computation
+        # snapshot the global model for Defft's delta computation
         self.global_model = copy.deepcopy(self.local_model).to(self.device)
         self.local_model.train()
 
