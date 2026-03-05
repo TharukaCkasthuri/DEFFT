@@ -49,7 +49,6 @@ from datasets.mnist.preprocess import MNISTDataset
 from datasets.cifar10.preprocess import CIFARDataset
 from utils import stable_hash, save_client_distributions
 from typing import Tuple, Dict
-from config import FitnessCfg
 from scipy.stats import entropy
 
 class Server(ABC):
