@@ -879,7 +879,7 @@ class DefftServer(Server):
 
                 # Build the group leader
                 logging.info("Subglobal (group:%s) model aggregation weights: %s", group_id, group_weights_dict)
-                group_leader = self._aggregate(group_clients, group_weights_dict)
+                group_leader = self._aggregate(valid_clients, group_weights_dict)
 
                 # Store as CPU state_dict (for later KD)
                 self._leader_models_by_group[group_id] = {
