@@ -27,17 +27,17 @@ Supported datasets include:
 
 ```
 .
-├── clients/                # Client implementations
-├── server/                 # Server implementations
+├── clients.py              # Client implementations
+├── server.py               # Server implementations
 ├── models/                 # Neural network architectures
 ├── datasets/               # Dataset preprocessing pipelines
 ├── evals/                  # Loss functions and evaluation utilities
 ├── conf/                   # Hydra configuration files
-├── └──dataset
-    └── mnist.yaml
-    └── mnist.yaml
-    └── femnist.yaml
-│   └── config.yaml
+│   ├── config.yaml
+│   └── dataset/
+│       ├── mnist.yaml
+│       ├── cifar10.yaml
+│       └── femnist.yaml
 ├── utils/                  # Utility functions
 ├── checkpt/                # Saved checkpoints
 ├── .logs/                  # Experiment logs
