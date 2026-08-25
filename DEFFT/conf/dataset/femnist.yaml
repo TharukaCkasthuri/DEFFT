@@ -10,10 +10,12 @@ client_fraction: 0.2
 ditto_lambda: 0.1
 error_threshold: 0.3
 eta: 0.01
-train_samples_file: training_samples_v4.json
+momentum: 0.9
+train_samples_file: training_samples_v2.json
 global_rounds: 150
 local_rounds: 5
 qfedavg_q: 0.3
+fedprox_mu: 1
 defft:
   beta: 0.1
   kd_alpha: 0.3
@@ -21,7 +23,6 @@ defft:
 
 
 # Additional Context V2 version was kd_alpha: 0.3 and kd_tem: 2.0
-
 # v4 beta: 0.2
 #  kd_alpha: 0.3
  # kd_temp: 2.0

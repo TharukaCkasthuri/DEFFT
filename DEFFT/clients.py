@@ -59,6 +59,7 @@ class Client:
         test_batch_size: int,
         learning_rate: float,
         weight_decay: float,
+        momentum: float = 0.0,
         local_model: object = None,
     ) -> None:
 
@@ -66,8 +67,9 @@ class Client:
         self.loss_fn = copy.deepcopy(loss_fn)
         self.batch_size = train_batch_size
         self.device = get_device()
-
-
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.momentum = momentum
 
         if local_model is None:
             raise ValueError("local_model must be provided")
@@ -88,13 +90,14 @@ class Client:
             train_dataset, train_batch_size, shuffle=True, drop_last=False
         )
         self.valdl = DataLoader(test_dataset, test_batch_size, shuffle=False, drop_last=False)
-          
+
         self.optimizer = torch.optim.SGD(
             self.local_model.parameters(),
-            lr=learning_rate,
-            weight_decay=weight_decay,
-            momentum=0.9
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay,
+            momentum=self.momentum
         )
+        
 
     def get_num_datapoints(self) -> int:
         """
@@ -289,7 +292,7 @@ class FedProxClient(Client):
         patience: int = 1,               
     ) -> torch.nn.Module:
     
-        self.local_model.train()
+        
 
         same_ref = all(
         p1.data_ptr() == p2.data_ptr()
@@ -300,8 +303,11 @@ class FedProxClient(Client):
         )
         print(f"[DEBUG] {self.client_id}: local_model and broadcast_model share memory? {same_ref}")
         # 
+
+        self.local_model.train()
         for epoch in range(max_local_round):
             batch_loss = []
+            batch_prox = []
 
             for batch_idx, (x, y) in enumerate(self.traindl):
                 x, y = x.to(self.device), y.to(self.device)
@@ -325,12 +331,18 @@ class FedProxClient(Client):
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.local_model.parameters(), max_norm=1.0)
                 self.optimizer.step()
+                
                 batch_loss.append(loss.detach().item())
+                batch_prox.append(prox.detach().item() if isinstance(prox, torch.Tensor) else float(prox))
 
             loss_avg = float(sum(batch_loss) / max(len(batch_loss), 1))
+            prox_avg = float(sum(batch_prox) / max(len(batch_prox), 1))
+
             logging.info(
                 f"Client: {self.client_id:<10} Epoch: {epoch + 1:<2} "
-                f"FedProx Train Loss (data+prox): {loss_avg:<10.6f} Global Round: {global_round}"
+                f"Train Loss: {loss_avg:<10.6f} "
+                f"Prox: {prox_avg:<10.6f} "
+                f"Global Round: {global_round}"
             )
 
         return self.local_model
@@ -571,6 +583,13 @@ class DefftClient(Client):
         grad_clip: float = 1.0, 
         use_kd: bool = True,
     ) -> torch.nn.Module:
+
+        self.optimizer = torch.optim.SGD(
+                self.local_model.parameters(),
+                lr=self.learning_rate,
+                weight_decay=self.weight_decay,
+                momentum=self.momentum
+            )
 
         # snapshot the global model for Defft's delta computation
         self.global_model = copy.deepcopy(self.local_model).to(self.device)

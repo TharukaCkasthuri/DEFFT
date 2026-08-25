@@ -390,27 +390,18 @@ class QFedAvgServer(Server):
 
 class FedProxServer(Server):
 
-    def receive_global(self, model_weights: dict) -> None:
-        try:
-            self.broadcast_model.load_state_dict(model_weights, strict=True)
-        except Exception as e:
-            logging.error(f"Client {self.client_id} broadcast load error: {e}. Keeping old weights.")
-            return
-        self.local_model.load_state_dict(self.broadcast_model.state_dict())
-        # re-init optimizer here to avoid stale momentum/state
-        if isinstance(self.train_dataset, CIFARDataset):
-            self.optimizer = torch.optim.SGD(self.local_model.parameters(), lr=self.optimizer.defaults['lr'],
-                                            weight_decay=self.optimizer.defaults['weight_decay'], momentum=0.9)
-        else:
-            self.optimizer = torch.optim.SGD(self.local_model.parameters(), lr=self.optimizer.defaults['lr'],
-                                            weight_decay=self.optimizer.defaults['weight_decay'])
-
+    """
+    The federated learning server class for FedProx.
+    """
+    def __init__(self, *args, mu, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.mu = mu
 
     def _aggregate(self, trained_clients, weights):
         return weighted_avg(self.global_model, [c.get_model() for c in trained_clients.values()], weights)
     
 
-    def train(self, train_schedule: dict, max_local_round: int, mu:float, threshold: float=None, patience: int=None,) -> torch.nn.Module:
+    def train(self, train_schedule: dict, max_local_round: int, threshold: float=None, patience: int=None,) -> torch.nn.Module:
         """
         
         """
@@ -424,8 +415,13 @@ class FedProxServer(Server):
 
             num_data_points = {}
             for client in train_clients.values():
-                client.train(round, max_local_round, mu, threshold, patience)
-                num_data_points[client.client_id] = client.get_num_datapoints()
+                try:
+                    client.train(round, max_local_round,self.mu, threshold, patience)
+                    num_data_points[client.client_id] = client.get_num_datapoints()
+                    
+                except Exception as e:
+                    logging.error(f"Client {client.client_id} failed: {e}")
+                    raise
                 logging.info(f"\n")
 
             total_points = sum(num_data_points.values())
@@ -434,7 +430,9 @@ class FedProxServer(Server):
                 continue
 
             weights = [num_data_points[c.client_id] / total_points for c in train_clients.values()]
-            self.global_model = self._aggregate(train_clients, weights)
+            logging.info(f"Global model aggregation weights: {weights}")
+            new_global = self._aggregate(train_clients, weights)
+            self.global_model.load_state_dict(new_global.state_dict())
 
             self.save_checkpt(self.global_model, f"{self.checkpoint_path}/checkpoints/ckpt_{round}.pt")
             
