@@ -3,7 +3,7 @@
 Official implementation of the paper:
 
 **Hierarchical Knowledge Distillation for Fair Federated Learning**
-Submitted to **ECML-PKDD 2026**
+Submitted to **Workshop on Trustworthy Machine Learning for Fair, Private, Robust, and Explainable Decision-Making (TML4DM)**
 
 ## Overview
 
