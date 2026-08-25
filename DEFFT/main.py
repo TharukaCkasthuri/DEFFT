@@ -133,8 +133,10 @@ class Federation:
         self.train_batch_size = cfg.dataset.train_batch_size
         self.test_batch_size = cfg.dataset.test_batch_size
         self.weight_decay = cfg.dataset.weight_decay
+        self.momentum = cfg.dataset.momentum
         self.eta = cfg.dataset.eta
         self.error_threshold = cfg.dataset.error_threshold
+
 
         if self.stratergy == "fedavg":
             self.server = FedAvgServer(self.global_rounds,checkpt_path=checkpt_path)
@@ -151,11 +153,12 @@ class Federation:
                     self.test_batch_size,
                     self.learning_rate,
                     self.weight_decay,
+                    momentum=self.momentum,
                     local_model= copy.deepcopy(self.model),
                 ))
 
         elif self.stratergy == "fedprox":
-            self.server = FedProxServer(self.global_rounds, checkpt_path=checkpt_path)
+            self.server = FedProxServer(self.global_rounds, checkpt_path=checkpt_path, mu=cfg.dataset.fedprox_mu)
             self.server.init_model(self.model)
 
             for id in client_ids:
@@ -168,6 +171,7 @@ class Federation:
                     self.test_batch_size,
                     self.learning_rate,
                     self.weight_decay,
+                    momentum=self.momentum,
                     local_model= copy.deepcopy(self.model),
                 ))
 
@@ -186,6 +190,7 @@ class Federation:
                     self.test_batch_size,
                     self.learning_rate,
                     self.weight_decay,
+                    momentum=self.momentum,
                     local_model= copy.deepcopy(self.model),
                     kd_alpha=cfg.dataset.defft.kd_alpha,
                     kd_T=cfg.dataset.defft.kd_temp,
@@ -228,7 +233,7 @@ class Federation:
             trained_model = self.server.train(training_samples, max_local_round, threshold=0.05, patience=5)
 
         elif self.stratergy == "fedprox":
-            trained_model = self.server.train(training_samples, max_local_round,mu=5)
+            trained_model = self.server.train(training_samples, max_local_round)
         else:
             trained_model = self.server.train(training_samples, max_local_round, threshold, patience)
         return trained_model

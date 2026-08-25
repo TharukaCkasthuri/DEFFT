@@ -15,6 +15,7 @@ train_samples_file: training_samples_ctrl.json
 global_rounds: 300
 local_rounds: 5
 qfedavg_q: 0.5
+fedprox_mu: 0.01
 defft:
   beta: 0.5
   kd_alpha: 0.1
