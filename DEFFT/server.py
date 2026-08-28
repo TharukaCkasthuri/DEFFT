@@ -408,7 +408,7 @@ class FedProxServer(Server):
 
         for round in range(1, self.rounds + 1):
             logging.info(f"\n=== Global Round {round} ===")
-            train_clients_ids = train_schedule.get(str(1), [])
+            train_clients_ids = train_schedule.get(str(round), [])
 
             train_clients = {cid: self.client_dict[cid] for cid in train_clients_ids}
             self._broadcast(self.global_model, train_clients)

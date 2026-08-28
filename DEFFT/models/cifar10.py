@@ -15,6 +15,7 @@ GNU General Public License for more details.
 Paper: Hierarchical Knowledge Distillation for Fair Federated Learning
 Submitted to: ECML-PKDD 2026 
 """
+
 import torch
 import torch.nn.functional as F
 from torch import nn

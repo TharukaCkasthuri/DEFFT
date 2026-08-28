@@ -9,6 +9,6 @@ loss_threshold: 0.01
 patience: 2
 save_ckpt: true
 log_summary: true
-stratergy: defft
+stratergy: fedavg
 loss_function: CrossEntropyLoss
-version: v_testing
+version: v1
