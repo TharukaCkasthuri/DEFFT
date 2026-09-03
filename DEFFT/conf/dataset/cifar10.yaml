@@ -1,7 +1,7 @@
 name: cifar10
 model: CIFAR10Net
 data_dir: datasets/cifar10/alpha_0_1
-num_classes: 10
+total_classes: 10
 learning_rate: 0.001
 train_batch_size: 32
 test_batch_size: 8
@@ -11,7 +11,7 @@ client_fraction: 0.6
 ditto_lambda: 0.1
 eta: 0.002
 error_threshold: 0.4
-train_samples_file: training_samples_v1.json
+train_samples_file: training_samples_v4.json
 global_rounds: 300
 local_rounds: 10
 qfedavg_q: 0.4

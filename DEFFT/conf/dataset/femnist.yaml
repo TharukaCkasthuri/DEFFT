@@ -1,7 +1,7 @@
 name: femnist
 model: FEMNISTNet
 data_dir: datasets/femnist
-num_classes: 62
+total_classes: 62
 learning_rate: 0.01
 train_batch_size: 64
 test_batch_size: 8
@@ -11,7 +11,7 @@ ditto_lambda: 0.1
 error_threshold: 0.3
 eta: 0.01
 momentum: 0.9
-train_samples_file: training_samples_v2.json
+train_samples_file: training_samples_v1.json
 global_rounds: 150
 local_rounds: 5
 qfedavg_q: 0.3

@@ -124,7 +124,6 @@ class Federation:
         self.client_ids = client_ids
         self.train_data_dir = f"{cfg.dataset.data_dir}/trainpt"
         self.test_data_dir = f"{cfg.dataset.data_dir}/testpt"
-        self.num_classes = cfg.dataset.num_classes
         self.model = model
         self.loss_fn = loss_fn
         self.global_rounds = cfg.dataset.global_rounds
@@ -176,7 +175,7 @@ class Federation:
                 ))
 
         elif self.stratergy == "defft":
-            self.server = DefftServer(self.global_rounds,checkpt_path=checkpt_path,beta=cfg.dataset.defft.beta)
+            self.server = DefftServer(self.global_rounds,checkpt_path=checkpt_path,beta=cfg.dataset.defft.beta, total_classes=cfg.dataset.total_classes)
             self.server.init_model(self.model)
 
             # Set up the clients for defft server
@@ -325,7 +324,7 @@ def main(cfg):
 
     # Model
     model_class = globals()[cfg.dataset.model]
-    model = model_class(cfg.dataset.num_classes) if cfg.dataset.name == "femnist" else model_class()
+    model = model_class(cfg.dataset.total_classes) if cfg.dataset.name == "femnist" else model_class()
 
     if cfg.loss_function == "FocalLoss":
         loss_fn = FocalLoss(alpha=1, gamma=0, reduction='mean')

@@ -530,10 +530,13 @@ class DefftClient(Client):
         # Create a copy of the same architecture
         teacher = copy.deepcopy(self.local_model).to(self.device)
 
-        # The leader weights you stored were only parameter tensors (no buffers).
+        # The leader weights stored were only parameter tensors (no buffers).
         # strict=False lets us load what's available and ignore missing buffers (e.g., BN running stats).
         try:
-            teacher.load_state_dict(leader_state, strict=False)
+            #teacher.load_state_dict(leader_state, strict=False)
+            missing = teacher.load_state_dict(leader_state, strict=False)
+            if missing.missing_keys:
+                logging.warning(f"[{self.client_id}] Teacher missing keys (likely BN buffers): {missing.missing_keys}")
         except Exception as e:
             logging.error(f"[{self.client_id}] Failed to load leader state into teacher: {e}")
             return None
@@ -543,20 +546,6 @@ class DefftClient(Client):
         for p in teacher.parameters():
             p.requires_grad = False
         return teacher
-        
-
-    def adaptive_temperature(self, round_idx: int,
-                         total_rounds: int,
-                         T_min: float = 1.0,
-                         T_max: float = 8.0,
-                         mode: str = "linear") -> float:
-        ratio = round_idx / max(total_rounds, 1)
-        if mode == "linear":
-            return T_max - (T_max - T_min) * ratio
-        elif mode == "exp":
-            return T_min + (T_max - T_min) * math.exp(-3 * ratio)
-        else:
-            return T_max
         
 
     @staticmethod
@@ -601,15 +590,14 @@ class DefftClient(Client):
         # compute pre-loss on global model
         self.preloss, _ = self.evaluate(broadcast_model=True, data_split="val")
 
+        """
         if self.use_kd and self.ema_cluster_loss is not None:
             delta = (self.preloss - self.ema_cluster_loss) / (self.ema_cluster_loss + 1e-8)
-
-            progress = global_round / 150
 
             alpha_base = 0.5
             slope = 0.3
             alpha_min = 0.3
-            alpha_max = 0.75 #- 0.25 * progress   # decay KD late
+            alpha_max = 0.75 
 
             if delta <= 0:
                 # client is at or better than its cluster → do NOT regularize it
@@ -621,7 +609,8 @@ class DefftClient(Client):
                 )
         else:
             self.kd_alpha = self.kd_alpha
-
+        """
+        
         if use_kd:
             teacher_leader = self._build_teacher_from_leader()
             if not teacher_leader:

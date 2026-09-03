@@ -449,11 +449,13 @@ class DefftServer(Server):
         self,
         rounds: int,
         beta: float,
+        total_classes: int = 10,
         checkpt_path: str = None,
         log_dir: str = "runs",
     ):
         super().__init__(rounds, checkpt_path=checkpt_path, log_dir=log_dir)
         self.beta = beta
+        self.total_classes = total_classes
         self._groups: dict[str, int] = {}              # cid -> group id (fixed after round 1)
         self._client_distributions: dict[str, dict[int, float]] = {}
         self._leader_models_by_group: dict[int, dict] = {}  # gid -> state_dict
@@ -473,7 +475,7 @@ class DefftServer(Server):
         for cid in client_ids:
             counts = np.array([distributions[cid].get(i, 0) for i in range(total_classes)], dtype=float)
             counts += alpha  # Laplace smoothing
-            print(f"Client {cid} counts before normalization: {counts}")
+            logging.debug(f"Client {cid} counts before normalization: {counts}")
             counts /= counts.sum()
             vectors.append(counts)
 
@@ -490,7 +492,7 @@ class DefftServer(Server):
 
         logging.info(f"JSD distance threshold for clustering: {jsd_threshold:.4f}")
 
-        clusters = fcluster(Z, t=498, criterion='distance')
+        clusters = fcluster(Z, t=jsd_threshold, criterion='distance')
         _, counts = np.unique(clusters, return_counts=True)
 
         singleton_frac = np.mean(counts == 1)
@@ -498,7 +500,8 @@ class DefftServer(Server):
         if singleton_frac > 0.25:
             # gently relax, not jump to the top
             T = np.quantile(Z[:, 2], 0.88)
-            clusters = fcluster(Z, t=0.35, criterion="distance")
+            logging.info(f"High singleton fraction ({singleton_frac:.2%}), relaxing threshold to {T:.4f}")
+            clusters = fcluster(Z, t=T, criterion="distance")
 
 
         client_to_cluster = {}
@@ -632,7 +635,45 @@ class DefftServer(Server):
         return X, client_ids
 
 
-    def _aggregate(
+    def _aggregate(self, trained_clients, weights, base_model) -> torch.nn.Module:
+        """Aggregate into a fresh copy of base_model, 
+        don't mutate base_model itself."""
+        device = self.device
+        result_model = copy.deepcopy(base_model).to(device)
+
+        global_state = {
+            name: param.detach().clone().to(device)
+            for name, param in base_model.state_dict().items()
+            if torch.is_floating_point(param)
+        }
+        delta_sum = {name: torch.zeros_like(p, device=device) for name, p in global_state.items()}
+        weight_sum = 0.0
+
+        for cid, client in trained_clients.items():
+            w_k = weights.get(cid, 0.0)
+            if w_k <= 0:
+                continue
+            weight_sum += w_k
+            local_state = {
+                name: p.detach().clone().to(device)
+                for name, p in client.get_model().state_dict().items()
+                if torch.is_floating_point(p)
+            }
+            for name in global_state.keys():
+                delta_sum[name] += w_k * (global_state[name] - local_state[name])
+
+        if weight_sum == 0.0:
+            logging.warning("weight_sum == 0, skipping update")
+            return result_model
+
+        new_state = result_model.state_dict()
+        for name, w_t in global_state.items():
+            new_state[name] = w_t - delta_sum[name] / weight_sum
+        result_model.load_state_dict(new_state)
+        return result_model
+
+
+    def _aggregate_wrong(
         self,
         trained_clients: dict,
         weights: dict
@@ -763,7 +804,7 @@ class DefftServer(Server):
                         pca_dim=3,
                         random_state=0)
         else:
-            client_ids, jsd_condensed = self._embed_for_clustering(self._client_distributions, total_classes=62, alpha=0)
+            client_ids, jsd_condensed = self._embed_for_clustering(self._client_distributions, total_classes=self.total_classes, alpha=0)
             self._c2g, self._g2c = self.hierarchical_clustering(client_ids, jsd_condensed)
 
         #--------------------------------------------------------------------
@@ -791,8 +832,9 @@ class DefftServer(Server):
             logging.info(f"=== Global Round {r} ===")
             train_clients_ids = train_schedule.get(str(r), [])
             reports = {}
-
             train_clients = {cid: self.client_dict[cid] for cid in train_clients_ids}
+            round_base_model = copy.deepcopy(self.global_model).to(self.device)
+
             #----------------------------------------------------
             # Broadcast the global model to all clients
             #----------------------------------------------------
@@ -877,7 +919,7 @@ class DefftServer(Server):
 
                 # Build the group leader
                 logging.info("Subglobal (group:%s) model aggregation weights: %s", group_id, group_weights_dict)
-                group_leader = self._aggregate(valid_clients, group_weights_dict)
+                group_leader = self._aggregate(valid_clients, group_weights_dict, base_model=round_base_model)
 
                 # Store as CPU state_dict (for later KD)
                 self._leader_models_by_group[group_id] = {
@@ -904,7 +946,7 @@ class DefftServer(Server):
             w_list = [weights[cid] for cid in cid_order]
 
             logging.info(f"Global model aggregation weights: {w_list}")
-            self.global_model = self._aggregate(train_clients, weights=weights)            
+            self.global_model = self._aggregate(train_clients, weights=weights, base_model=round_base_model)
 
             self.save_checkpt(self.global_model, f"{self.checkpoint_path}/checkpoints/ckpt_{r}.pt")
 

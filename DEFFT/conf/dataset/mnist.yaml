@@ -1,7 +1,7 @@
 name: mnist
 model: MNISTNet
 data_dir: datasets/mnist/alpha_0_1
-num_classes: 10
+total_classes: 10
 learning_rate: 0.001
 train_batch_size: 32
 test_batch_size: 8
@@ -11,12 +11,12 @@ ditto_lambda: 0.2
 error_threshold: 0.3
 eta: 0.01
 momentum: 0.0
-train_samples_file: training_samples_ctrl.json
+train_samples_file: training_samples_v5.json
 global_rounds: 300
 local_rounds: 5
 qfedavg_q: 0.5
 fedprox_mu: 0.01
 defft:
   beta: 0.5
-  kd_alpha: 0.1
+  kd_alpha: 0.3
   kd_temp: 2.0
